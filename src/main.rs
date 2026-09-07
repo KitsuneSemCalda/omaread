@@ -70,6 +70,10 @@ const SLIDE: Duration = Duration::from_millis(160);
 /// has not been asked for yet.
 const FRAME: Duration = Duration::from_millis(16);
 
+/// How long to wait before re-trying a frame the compositor refused. Grows with
+/// each consecutive failure.
+const RETRY: Duration = Duration::from_millis(500);
+
 /// How long the reading HUD lingers after the pointer stops moving.
 const HUD_LINGER: Duration = Duration::from_millis(2200);
 
@@ -517,6 +521,11 @@ struct App {
     /// with real bugs in it (see `exiting`), and it cannot be tested by hand or
     /// in CI without a way to reach it that needs no window manager.
     exit_at: Option<Instant>,
+    /// Consecutive frames the compositor refused, and when to try the next one.
+    /// A surface that times out once stays wedged until it is reconfigured, so
+    /// a dropped frame is not something to retry at frame rate.
+    drops: u32,
+    retry_at: Option<Instant>,
     toc_sel: usize,
     /// The reading page to come back to when the contents close. All three
     /// views share `page`, so it has to be put somewhere.
@@ -597,6 +606,8 @@ impl App {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .map(|ms| Instant::now() + Duration::from_millis(ms)),
+            drops: 0,
+            retry_at: None,
             toc_sel: 0,
             resume_page: 0,
             book: None,
@@ -2205,6 +2216,26 @@ impl App {
         }
     }
 
+    /// Put the surface back after the compositor refused a frame. Acquiring a
+    /// surface texture that times out leaves the swapchain wedged: every later
+    /// frame times out too, which is what a frozen window is. Reconfiguring it
+    /// clears that; if a reconfigure was not enough, the surface gets built
+    /// again from scratch. Retries slow down as they fail, so a screen that is
+    /// off for an hour is not an hour of the GPU being asked every 16ms.
+    fn recover(&mut self) {
+        self.drops += 1;
+        let (w, h) = self.size;
+        if self.drops == 1 {
+            self.renderer.set_size(w, h);
+        } else if let Some(window) = self.window.clone() {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                self.renderer.suspend();
+                self.renderer.resume(window, w, h);
+            }));
+        }
+        self.retry_at = Some(Instant::now() + RETRY * self.drops.min(10));
+    }
+
     fn redraw(&mut self) {
         let started = Instant::now();
         let (w, h) = self.size;
@@ -3059,6 +3090,10 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 if catch_unwind(AssertUnwindSafe(|| self.redraw())).is_err() {
                     eprintln!("omaread: dropped a frame the compositor would not take");
+                    self.recover();
+                } else {
+                    self.drops = 0;
+                    self.retry_at = None;
                 }
             }
 
@@ -3076,6 +3111,17 @@ impl ApplicationHandler for App {
                 return;
             }
             event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+            return;
+        }
+
+        // Nothing else is worth drawing until a frame lands again.
+        if let Some(at) = self.retry_at {
+            if Instant::now() < at {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+                return;
+            }
+            self.retry_at = None;
+            self.request_redraw();
             return;
         }
 
