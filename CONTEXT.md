@@ -3,7 +3,7 @@
 A proper EPUB reader for Omarchy. Pure Rust, no webview, Apple Books aesthetic.
 
 Omarchy is the **reference platform**, not a dependency: built and tuned there,
-runs on any Wayland desktop. Single maintainer, private until 1.0.
+runs on any Wayland desktop. Single maintainer, public since 1.0.
 
 This file is the decision record. It exists so that no session — human or agent —
 relitigates a settled question. If you disagree with something here, change it
@@ -20,9 +20,10 @@ here first.
 - **Hermetic.** The application never makes a network request.
 - **GPL-3.0-or-later.**
 
-Target user is the maintainer first. 1.0 ships when the Full feature set below is
-done; there are no public releases before that, and therefore no schema or format
-compatibility obligations until 1.0.
+Target user is the maintainer first. 1.0 shipped with the Full feature set
+below. From 1.0 the database, settings and exported files are owed
+compatibility: a change migrates what is there, and never asks a reader to start
+over or lose their place, marks or tags.
 
 ## 2. Stack
 
@@ -1207,7 +1208,7 @@ integration degrades to a sensible default elsewhere.
 
 ## 12. Packaging and platform
 
-- AUR first; Flatpak at 1.0. The AUR package is `omaread-git`
+- AUR first; Flatpak next, not yet built. The AUR package is `omaread-git`
   (`packaging/aur/PKGBUILD`), built from `master`: there are no tags to build a
   versioned one from. It installs the binary, a `.desktop` entry, and the two
   Omarchy files under `/usr/share/omaread/omarchy/` for the user to copy.
@@ -1358,8 +1359,8 @@ remaining ~140ms down again; noted at `net::CoverProvider`.
 
 ## 13. Testing
 
-Because there are no public releases before 1.0, no stranger's broken EPUB will
-be seen for a long time. The substitute:
+There were no public releases before 1.0, so no stranger's broken EPUB was seen
+while the engine was built. The substitute, still the first line of defence:
 
 - **Conformance corpus in CI** (`.github/workflows/ci.yml`, `ci/corpus.sh`) —
   the W3C EPUB test suite (211 books, packed from the repo at a pinned commit),

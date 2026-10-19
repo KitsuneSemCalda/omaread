@@ -14,9 +14,6 @@ in a typeface made for reading.
 - **Follows your desktop.** On Omarchy the library, menus and page take the
   current theme's colours and fonts, and change with it.
 
-> **Status:** pre-1.0. It is the maintainer's daily reader, but the database and
-> settings may change between commits without a migration.
-
 ## Features
 
 - **A real page.** Books are paginated line by line, never cut through a line,

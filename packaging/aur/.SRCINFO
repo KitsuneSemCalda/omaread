@@ -1,0 +1,25 @@
+pkgbase = omaread-git
+	pkgdesc = An EPUB, AZW3 and MOBI reader for Wayland, made for Omarchy
+	pkgver = 0.1.0.r45.g655c984
+	pkgrel = 1
+	url = https://github.com/danielgccr/omaread
+	arch = x86_64
+	arch = aarch64
+	license = GPL-3.0-or-later
+	makedepends = cargo
+	makedepends = git
+	depends = fontconfig
+	depends = gcc-libs
+	depends = glibc
+	depends = libxkbcommon
+	depends = wayland
+	optdepends = xdg-desktop-portal: file and folder pickers, show in folder, trash
+	optdepends = wl-clipboard: copy selected text
+	optdepends = xdg-utils: open external links
+	provides = omaread
+	conflicts = omaread
+	options = !lto
+	source = git+https://github.com/danielgccr/omaread.git
+	sha256sums = SKIP
+
+pkgname = omaread-git

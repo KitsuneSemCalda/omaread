@@ -2,8 +2,8 @@
 //!
 //! Books are identified by SHA-256 so progress survives a rename or a move
 //! (CONTEXT.md §4). Schema stays minimal: metadata, covers, highlights, tags and
-//! FTS5 arrive with the phases that need them, and nothing is owed compatibility
-//! before 1.0.
+//! FTS5 arrive with the phases that need them. From 1.0 an existing database is
+//! owed compatibility: it is migrated in place, never thrown away.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -118,8 +118,9 @@ impl Db {
         )
         .map_err(|e| e.to_string())?;
 
-        // Nothing is owed compatibility before 1.0, so grow the table in place
-        // and let the already-exists errors fall on the floor.
+        // Growing the table in place is the migration: a new column with a
+        // default reads an old database unchanged, and the already-exists
+        // errors on a current one fall on the floor.
         for col in [
             "author TEXT NOT NULL DEFAULT ''",
             "cover BLOB",

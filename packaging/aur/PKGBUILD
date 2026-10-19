@@ -1,7 +1,7 @@
-# Maintainer: Daniel <dcarrasco at mysmartheart dot ch>
+# Maintainer: Daniel <danielgarcarrasco at gmail dot com>
 
 pkgname=omaread-git
-pkgver=0.1.0.r0.g0000000
+pkgver=0.1.0.r45.g655c984
 pkgrel=1
 pkgdesc="An EPUB, AZW3 and MOBI reader for Wayland, made for Omarchy"
 arch=('x86_64' 'aarch64')
@@ -17,6 +17,9 @@ provides=('omaread')
 conflicts=('omaread')
 source=("git+$url.git")
 sha256sums=('SKIP')
+# makepkg's LTO turns the bundled SQLite into GCC bitcode, which the Rust link
+# step cannot read: undefined sqlite3_* symbols.
+options=('!lto')
 
 pkgver() {
   cd omaread

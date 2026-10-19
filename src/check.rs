@@ -1,7 +1,7 @@
 //! Headless conformance run.
 //!
-//! No public releases before 1.0 means no stranger's broken EPUB will surface a
-//! bug for a long time (CONTEXT.md §13). This is the substitute: open every
+//! Strangers' broken EPUBs were not there to surface bugs while the engine was
+//! built (CONTEXT.md §13). This is the substitute: open every
 //! chapter of every book given, lay it out, paginate it, and assert the
 //! invariants that matter. Intended for CI and for sweeping the local library.
 
