@@ -2,6 +2,7 @@
 //!
 //! Phase 1: one chapter on screen. See CONTEXT.md for the design record.
 
+mod a11y;
 mod book;
 mod chapter;
 mod net;
@@ -38,7 +39,7 @@ use std::time::{Duration, Instant};
 use style::{Chrome, GUTTER_EM, MEASURE_EM, PAGE_MARGIN_EM, ReadingStyle, Theme};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
@@ -98,6 +99,19 @@ fn columns_for(requested: usize, css_width: f32, font_px: f32, reading: bool) ->
 
 #[cfg(test)]
 mod tests {
+    use super::step_row;
+
+    #[test]
+    fn menu_rows_step_and_wrap() {
+        assert_eq!(step_row(None, 1, 8), 0, "down from nothing is the top");
+        assert_eq!(step_row(None, -1, 8), 7, "up from nothing is the bottom");
+        assert_eq!(step_row(Some(2), 1, 8), 3);
+        assert_eq!(step_row(Some(0), -1, 8), 7, "up from the top wraps");
+        assert_eq!(step_row(Some(7), 1, 8), 0, "down from the bottom wraps");
+        assert_eq!(step_row(Some(5), isize::MIN, 8), 0);
+        assert_eq!(step_row(None, isize::MAX, 8), 7);
+    }
+
     use super::columns_for;
     use crate::style::{GUTTER_EM, MEASURE_EM};
 
@@ -348,6 +362,19 @@ mod tests {
     }
 }
 
+/// The row `by` steps from `at` among `n`, wrapping; with nothing reached yet,
+/// down starts at the top and up at the bottom. `isize::MIN`/`MAX` are Home/End.
+fn step_row(at: Option<usize>, by: isize, n: usize) -> usize {
+    let n = n.max(1) as isize;
+    (match (by, at) {
+        (isize::MIN, _) => 0,
+        (isize::MAX, _) => n - 1,
+        (1.., None) => 0,
+        (..=0, None) => n - 1,
+        (_, Some(i)) => (i as isize + by).rem_euclid(n),
+    }) as usize
+}
+
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
@@ -409,9 +436,13 @@ fn main() {
         .map(|n| n.saturating_sub(1))
         .unwrap_or(0);
 
-    let event_loop = EventLoop::new().expect("create event loop");
+    // AccessKit's requests arrive as user events (see `a11y.rs`).
+    let event_loop = EventLoop::<accesskit_winit::Event>::with_user_event()
+        .build()
+        .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App::new(args.first().cloned(), start);
+    app.proxy = Some(event_loop.create_proxy());
     event_loop.run_app(&mut app).expect("run event loop");
 
     // Leave without running destructors: quitting should not wait on freeing
@@ -558,6 +589,10 @@ struct App {
     /// 1 or 2. Two-column falls back to one below `TWO_COLUMN_MIN_EM`.
     columns: usize,
     window: Option<Arc<Window>>,
+    /// The screen-reader bridge. Idle, and cheap, until an assistive
+    /// technology asks for the tree.
+    a11y: Option<accesskit_winit::Adapter>,
+    proxy: Option<EventLoopProxy<accesskit_winit::Event>>,
     renderer: VelloWindowRenderer,
     net_tx: Sender<Resource>,
     net_rx: Receiver<Resource>,
@@ -594,6 +629,8 @@ impl App {
             hover_card: None,
             hover_hud: None,
             hover_menu: None,
+            a11y: None,
+            proxy: None,
             slide: None,
             back: None,
             popup: None,
@@ -1218,6 +1255,57 @@ impl App {
         ancestor_attr(menu.dom(), hit.node_id, "data-set")
     }
 
+    /// The open menu's rows, in order, as `(data-set, data-label)`.
+    fn menu_rows(&self) -> Vec<(String, String)> {
+        fn walk(dom: &blitz_dom::BaseDocument, id: usize, out: &mut Vec<(String, String)>) {
+            let Some(node) = dom.get_node(id) else { return };
+            if let blitz_dom::NodeData::Element(el) = &node.data {
+                let attr = |n: &str| el.attrs.iter().find(|a| &*a.name.local == n).map(|a| a.value.to_string());
+                if let (Some(set), Some(label)) = (attr("data-set"), attr("data-label")) {
+                    out.push((set, label));
+                }
+            }
+            for c in &node.children {
+                walk(dom, *c, out);
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(m) = &self.menu {
+            walk(m.dom(), 0, &mut out);
+        }
+        out
+    }
+
+    /// Move the menu's highlighted row: the hover wash, driven by the arrows.
+    /// `by` wraps; `isize::MIN` and `isize::MAX` go to the first and last row.
+    fn step_menu(&mut self, by: isize) {
+        let rows = self.menu_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let at = self.hover_menu.as_ref().and_then(|h| rows.iter().position(|(s, _)| s == h));
+        self.hover_menu = Some(rows[step_row(at, by, rows.len())].0.clone());
+        self.request_redraw();
+    }
+
+    /// The menu's own keys: arrows walk the rows, Enter or Space acts on the
+    /// one reached. Returns false for any other key.
+    fn menu_key(&mut self, key: &Key) -> bool {
+        match key {
+            Key::Named(NamedKey::ArrowDown) => self.step_menu(1),
+            Key::Named(NamedKey::ArrowUp) => self.step_menu(-1),
+            Key::Named(NamedKey::Home) => self.step_menu(isize::MIN),
+            Key::Named(NamedKey::End) => self.step_menu(isize::MAX),
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                if let Some(what) = self.hover_menu.clone() {
+                    self.menu_do(what);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// A press inside the settings panel. Returns false when the panel is not
     /// open, or the press missed every control — which closes it.
     fn menu_action(&mut self) -> bool {
@@ -1232,7 +1320,12 @@ impl App {
             // starts the next selection.
             return self.view != View::Reading;
         };
+        self.menu_do(what)
+    }
 
+    /// Act on a menu row by its `data-set` name: a click, Enter on the row
+    /// the arrows reached, or a screen reader's request.
+    fn menu_do(&mut self, what: String) -> bool {
         // The reading view's context menu: act once, then get out of the way.
         if self.view == View::Reading {
             self.menu = None;
@@ -1640,8 +1733,12 @@ impl App {
 
     fn hud_action(&mut self) -> bool {
         let Some(what) = self.hud_under_pointer() else { return false };
+        self.hud_do(&what)
+    }
 
-        match what.as_str() {
+    /// Act on a HUD control by name: a click, or a screen reader's request.
+    fn hud_do(&mut self, what: &str) -> bool {
+        match what {
             "bookmark" => self.toggle_bookmark(),
             "contents" => {
                 self.toc_mode = TocMode::Contents;
@@ -1778,10 +1875,22 @@ impl App {
     /// open and every selection move rather than diffed — the same bargain the
     /// library grid makes.
     fn build_toc(&mut self) {
-        let Some(book) = self.book.clone() else { return };
+        if self.book.is_none() {
+            return;
+        }
         let entries = self.toc_entries();
-        let n = entries.len();
-        let (heading, subtitle) = match self.toc_mode {
+        let (heading, subtitle) = self.toc_heading(entries.len());
+        let (bg, fg, subtle, panel) = self.chrome();
+        let html = toc::html(&entries, &heading, &subtitle, self.index, self.toc_sel);
+        let ua = toc::stylesheet(&bg, &fg, &subtle, &panel);
+        self.toc_doc =
+            chapter::layout_document(html, ua, None, self.viewport(), self.page_height());
+    }
+
+    /// What the contents view is called, and the line under it, for `n` entries.
+    fn toc_heading(&self, n: usize) -> (String, String) {
+        let title = self.book.as_ref().map(|b| b.title.clone()).unwrap_or_default();
+        match self.toc_mode {
             TocMode::Search => (
                 i18n::tr!("toc-search"),
                 i18n::tr!("toc-search-hits", query = self.find.as_str(), n = n),
@@ -1793,13 +1902,182 @@ impl App {
                     None => i18n::tr!("toc-marks-count", n = n),
                 },
             ),
-            TocMode::Contents => (i18n::tr!("toc-contents"), book.title.clone()),
+            TocMode::Contents => (i18n::tr!("toc-contents"), title),
+        }
+    }
+
+    /// Hand the screen reader the current tree, if one is listening.
+    fn update_a11y(&mut self) {
+        if let Some(mut adapter) = self.a11y.take() {
+            adapter.update_if_active(|| self.a11y_tree());
+            self.a11y = Some(adapter);
+        }
+    }
+
+    /// The window as a screen reader sees it (`a11y.rs`).
+    fn a11y_tree(&self) -> accesskit::TreeUpdate {
+        use a11y::Target as T;
+        use accesskit::{Role, Toggled};
+        let title = match (&self.book, self.view) {
+            (Some(b), View::Reading | View::Toc) => b.title.clone(),
+            _ => "Omaread".to_string(),
         };
-        let (bg, fg, subtle, panel) = self.chrome();
-        let html = toc::html(&entries, &heading, &subtitle, self.index, self.toc_sel);
-        let ua = toc::stylesheet(&bg, &fg, &subtle, &panel);
-        self.toc_doc =
-            chapter::layout_document(html, ua, None, self.viewport(), self.page_height());
+        let mut t = a11y::Tree::new(&title);
+
+        match self.view {
+            View::Library => {
+                let value = match &self.tagging {
+                    Some(tag) => format!("#{tag}"),
+                    None => self.query.clone(),
+                };
+                t.add(T::Root, T::Search, Role::SearchInput, &i18n::tr!("search-hint")).set_value(value);
+                t.add(T::Root, T::Gear, Role::Button, &i18n::tr!("a11y-settings"));
+                let count = i18n::tr!("books-count", n = self.rows.len());
+                t.add(T::Root, T::List, Role::List, &i18n::tr!("library-title", heading = count));
+                for (i, b) in self.rows.iter().enumerate() {
+                    let by = match b.missing {
+                        true => i18n::tr!("library-file-missing"),
+                        false => b.author.clone(),
+                    };
+                    let label = match by.is_empty() {
+                        true => b.title.clone(),
+                        false => format!("{}, {by}", b.title),
+                    };
+                    t.add(T::List, T::Item(i), Role::ListItem, &label).set_selected(i == self.selected);
+                }
+                t.focus(match self.rows.is_empty() {
+                    true => T::Search,
+                    false => T::Item(self.selected),
+                });
+            }
+            View::Reading => {
+                t.add(T::Root, T::Toolbar, Role::Toolbar, "");
+                for (i, name) in a11y::HUD.iter().enumerate() {
+                    if let Some(label) = self.hud_label(name) {
+                        t.add(T::Toolbar, T::Hud(i), Role::Button, &label);
+                    }
+                }
+                // The page on screen, both columns of it. Its text is its name,
+                // so moving focus to it on a turn is what reads the page out.
+                if let Some(ch) = &self.chapter {
+                    let last = (self.page + self.effective_columns() - 1)
+                        .min(ch.pages.count().saturating_sub(1));
+                    let from = ch.pages.top_of(self.page);
+                    let to = ch.pages.top_of(last) + ch.pages.extent_of(last);
+                    let blocks = chapter::page_text(ch.dom(), from, to);
+                    let key = (self.index as u64) << 24 | self.page as u64;
+                    let text: Vec<&str> = blocks.iter().map(|(_, s)| s.as_str()).collect();
+                    t.add(T::Root, T::Page(key), Role::Document, &text.join("\n"))
+                        .set_description(self.readout());
+                    for (k, (level, s)) in blocks.iter().enumerate().take(u16::MAX as usize) {
+                        let role = if *level > 0 { Role::Heading } else { Role::Paragraph };
+                        let node = t.add(T::Page(key), T::Text(key, k as u16), role, s);
+                        if *level > 0 {
+                            node.set_level(*level as usize);
+                        }
+                    }
+                    t.focus(T::Page(key));
+                }
+                if let Some(note) = &self.popup {
+                    t.add(T::Root, T::Note, Role::Dialog, &chapter::text_of(note.dom(), 0));
+                    t.focus(T::Note);
+                }
+            }
+            View::Toc => {
+                let entries = self.toc_entries();
+                let (heading, subtitle) = self.toc_heading(entries.len());
+                t.add(T::Root, T::List, Role::List, &format!("{heading}, {subtitle}"));
+                for (i, e) in entries.iter().enumerate() {
+                    t.add(T::List, T::Item(i), Role::ListItem, &e.label).set_selected(i == self.toc_sel);
+                }
+                t.focus(T::Item(self.toc_sel));
+                if self.noting.is_some() {
+                    t.add(T::Root, T::Typing, Role::TextInput, &i18n::tr!("menu-add-note"))
+                        .set_value(self.note.clone());
+                    t.focus(T::Typing);
+                }
+            }
+        }
+
+        if self.menu.is_some() {
+            let label = match self.view {
+                View::Reading => i18n::tr!("a11y-actions"),
+                _ => i18n::tr!("a11y-settings"),
+            };
+            t.add(T::Root, T::Menu, Role::Menu, &label);
+            t.focus(T::Menu);
+            let theme = format!("theme:{}", format!("{:?}", self.style.theme).to_lowercase());
+            for (i, (set, label)) in self.menu_rows().iter().enumerate() {
+                match set.starts_with("theme:") {
+                    true => {
+                        let on = if *set == theme { Toggled::True } else { Toggled::False };
+                        t.add(T::Menu, T::MenuRow(i), Role::MenuItemRadio, label).set_toggled(on);
+                    }
+                    false => drop(t.add(T::Menu, T::MenuRow(i), Role::MenuItem, label)),
+                }
+                if self.hover_menu.as_ref() == Some(set) {
+                    t.focus(T::MenuRow(i));
+                }
+            }
+            if let Some(typed) = &self.adding_folder {
+                t.add(T::Menu, T::Typing, Role::TextInput, &i18n::tr!("settings-add-folder"))
+                    .set_value(typed.clone());
+                t.focus(T::Typing);
+            }
+        }
+        t.finish()
+    }
+
+    /// A HUD control's spoken name, or `None` when it is not on offer now.
+    fn hud_label(&self, name: &str) -> Option<String> {
+        Some(match name {
+            "bookmark" => i18n::tr!("hud-bookmark"),
+            "contents" => i18n::tr!("hud-contents"),
+            "highlight" if self.sel_mark.is_none() => i18n::tr!("hud-highlight"),
+            "unhighlight" if self.sel_mark.is_some() => i18n::tr!("menu-remove-highlight"),
+            "smaller" => i18n::tr!("a11y-smaller"),
+            "bigger" => i18n::tr!("a11y-bigger"),
+            "columns" => i18n::tr!("a11y-columns", n = self.columns),
+            "library" => i18n::tr!("hud-library"),
+            "back" => self.back.as_ref()?.2.clone(),
+            "readout" => self.readout(),
+            _ => return None,
+        })
+    }
+
+    /// A screen reader asked for something: a click, or focus on a row.
+    fn a11y_action(&mut self, req: accesskit::ActionRequest) {
+        use a11y::Target as T;
+        let click = req.action == accesskit::Action::Click;
+        match a11y::target(req.target_node) {
+            Some(T::Hud(i)) if click => drop(a11y::HUD.get(i).map(|name| self.hud_do(name))),
+            Some(T::MenuRow(i)) => {
+                if let Some((set, _)) = self.menu_rows().into_iter().nth(i) {
+                    match click {
+                        true => drop(self.menu_do(set)),
+                        false => self.hover_menu = Some(set),
+                    }
+                }
+            }
+            Some(T::Item(i)) => match self.view {
+                View::Library => {
+                    self.move_selection(i as isize - self.selected as isize);
+                    if click {
+                        self.open_selected();
+                    }
+                }
+                View::Toc if click => self.open_toc_entry(i),
+                View::Toc => self.move_toc_selection(i as isize - self.toc_sel as isize),
+                View::Reading => {}
+            },
+            Some(T::Gear) if click && self.view == View::Library => {
+                self.open_menu();
+                self.hover_menu = None;
+                self.step_menu(1);
+            }
+            _ => {}
+        }
+        self.request_redraw();
     }
 
     /// What the contents view lists: the book's navigation, or search hits.
@@ -2581,9 +2859,14 @@ impl App {
         // The panel takes every key while it is up, the same way the tag box
         // below takes every letter while it is being typed.
         if self.menu.is_some() {
+            if self.adding_folder.is_none() && self.menu_key(&key) {
+                return;
+            }
             match (key, self.adding_folder.is_some()) {
                 (Key::Named(NamedKey::Escape), true) => self.adding_folder = None,
-                (Key::Named(NamedKey::Escape), false) => self.menu = None,
+                (Key::Named(NamedKey::Escape | NamedKey::F10 | NamedKey::ContextMenu), false) => {
+                    self.menu = None
+                }
                 (Key::Named(NamedKey::Enter), true) => return self.add_folder(),
                 (Key::Named(NamedKey::Backspace), true) => {
                     if let Some(t) = self.adding_folder.as_mut() {
@@ -2680,6 +2963,14 @@ impl App {
                 self.reload_rows();
             }
             Key::Named(NamedKey::F5) => self.rescan(),
+            // The menu key, or F10 where there is none: the panel the cog
+            // opens, so it is reachable without a mouse.
+            Key::Named(NamedKey::F10 | NamedKey::ContextMenu) => {
+                self.open_menu();
+                self.hover_menu = None;
+                self.step_menu(1);
+                return;
+            }
             // A modifier-free key that is not a letter, for the same reason
             // sort and rescan are: letters go to the search box.
             Key::Named(NamedKey::F2) if !self.rows.is_empty() => {
@@ -2791,10 +3082,15 @@ impl App {
     }
 
     fn reading_key(&mut self, event_loop: &ActiveEventLoop, key: Key) {
-        // Any key puts the context menu away; Escape does nothing else.
-        if self.menu.take().is_some() {
+        // The menu's own keys act on it; any other key puts it away, and
+        // Escape or the menu key do nothing else.
+        if self.menu.is_some() {
+            if self.menu_key(&key) {
+                return;
+            }
+            self.menu = None;
             self.request_redraw();
-            if key == Key::Named(NamedKey::Escape) {
+            if matches!(key, Key::Named(NamedKey::Escape | NamedKey::F10 | NamedKey::ContextMenu)) {
                 return;
             }
         }
@@ -2806,6 +3102,12 @@ impl App {
             Key::Named(NamedKey::Space) => self.turn(true),
             Key::Named(NamedKey::ArrowDown) => self.turn_chapter(true),
             Key::Named(NamedKey::ArrowUp) => self.turn_chapter(false),
+            // The right click's menu, from the keyboard.
+            Key::Named(NamedKey::F10 | NamedKey::ContextMenu) => {
+                self.open_context_menu();
+                self.hover_menu = None;
+                self.step_menu(1);
+            }
             Key::Character(c) => match c.as_str() {
                 "q" => {
                     self.save_position();
@@ -3046,7 +3348,7 @@ pub fn ancestor_attr(dom: &blitz_dom::BaseDocument, mut id: usize, attr: &str) -
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<accesskit_winit::Event> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -3056,12 +3358,20 @@ impl ApplicationHandler for App {
         // shipped in assets/omarchy (CONTEXT.md §11).
         #[cfg(target_os = "linux")]
         use winit::platform::wayland::WindowAttributesExtWayland;
+        // Hidden until the AccessKit adapter exists: it has to be in place
+        // before the window is first shown.
         let attrs = Window::default_attributes()
+            .with_visible(false)
             .with_title("Omaread")
             .with_inner_size(winit::dpi::LogicalSize::new(900.0, 1000.0));
         #[cfg(target_os = "linux")]
         let attrs = attrs.with_name("omaread", "omaread");
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
+        self.a11y = self
+            .proxy
+            .clone()
+            .map(|p| accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, p));
+        window.set_visible(true);
 
         let size = window.inner_size();
         self.size = (size.width.max(1), size.height.max(1));
@@ -3090,6 +3400,9 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if let (Some(a), Some(w)) = (self.a11y.as_mut(), self.window.as_ref()) {
+            a.process_event(w, &event);
+        }
         match event {
             // The pointer left, so nothing is under it.
             WindowEvent::CursorLeft { .. } => {
@@ -3238,9 +3551,20 @@ impl ApplicationHandler for App {
                     self.drops = 0;
                     self.retry_at = None;
                 }
+                // Every change on screen comes through here, so the screen
+                // reader's picture is refreshed here too.
+                self.update_a11y();
             }
 
             _ => {}
+        }
+    }
+
+    fn user_event(&mut self, _: &ActiveEventLoop, event: accesskit_winit::Event) {
+        match event.window_event {
+            accesskit_winit::WindowEvent::InitialTreeRequested => self.update_a11y(),
+            accesskit_winit::WindowEvent::ActionRequested(req) => self.a11y_action(req),
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
         }
     }
 

@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Screen-reader support (CONTEXT.md §7): the tree types, and the winit adapter
+# that hands them to AT-SPI. Not blitz-dom's 0.17: see a11y.rs for why.
+accesskit = "0.25"
+accesskit_winit = "0.34.1"
 anyrender = "0.6"
 anyrender_vello_cpu = { version = "=0.8.1", features = ["softbuffer_window_renderer"] }
 blitz-dom = "0.2.4"

@@ -79,7 +79,7 @@ pub const CONTEXT_W: f32 = 240.0;
 pub fn context_html(selection: bool, on_highlight: bool, bookmarked: bool) -> String {
     let row = |set: &str, label: &str, key: &str| {
         format!(
-            r#"<div class="row" data-set="{set}">{}<span class="key">{key}</span></div>"#,
+            r#"<div class="row" data-set="{set}" data-label="{0}">{0}<span class="key">{key}</span></div>"#,
             tr!(label)
         )
     };

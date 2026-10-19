@@ -593,6 +593,53 @@ pub fn text_of(dom: &BaseDocument, id: usize) -> String {
     out.trim().to_string()
 }
 
+/// The text of the lines between two flow offsets, block by block, as
+/// `(heading level, text)` with level 0 for anything not a heading: what a
+/// screen reader is told is on the page. A line belongs to the page its middle
+/// is on, the same lines the paginator put there.
+pub fn page_text(dom: &BaseDocument, from: f32, to: f32) -> Vec<(u8, String)> {
+    fn walk(dom: &BaseDocument, id: usize, parent_y: f32, span: (f32, f32), out: &mut Vec<(u8, String)>) {
+        let Some(node) = dom.get_node(id) else { return };
+        let l = &node.final_layout;
+        let abs_y = parent_y + l.location.y;
+        if let NodeData::Element(el) = &node.data {
+            if let Some(tl) = el.inline_layout_data.as_ref() {
+                let content_top = abs_y + l.border.top + l.padding.top;
+                let text: String = tl
+                    .layout
+                    .lines()
+                    .filter(|line| {
+                        let m = line.metrics();
+                        let mid = content_top + (m.min_coord + m.max_coord) / 2.0;
+                        span.0 <= mid && mid < span.1
+                    })
+                    .filter_map(|line| tl.text.get(line.text_range()))
+                    .collect();
+                // Soft hyphens are for the line breaker, not for the ear.
+                let text = text.replace('\u{AD}', "").split_whitespace().collect::<Vec<_>>().join(" ");
+                if !text.is_empty() {
+                    let level = match el.name.local.as_ref() {
+                        "h1" => 1,
+                        "h2" => 2,
+                        "h3" => 3,
+                        "h4" => 4,
+                        "h5" => 5,
+                        "h6" => 6,
+                        _ => 0,
+                    };
+                    out.push((level, text));
+                }
+            }
+        }
+        for c in &node.children {
+            walk(dom, *c, abs_y, span, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(dom, 0, 0.0, (from, to), &mut out);
+    out
+}
+
 /// Rectangles covering a selection, in flow coordinates, as `(x0, y0, x1, y1)`.
 pub fn selection_rects(
     dom: &BaseDocument,
@@ -1017,6 +1064,24 @@ mod tests {
 
     /// The Phase 3 milestone: a saved position must survive a font-size change.
     /// A page *number* cannot do this, which is why positions anchor to CFI.
+    #[test]
+    fn page_text_is_the_lines_on_that_page() {
+        let body: String = std::iter::once("<h2>Uno</h2>".to_string())
+            .chain((0..40).map(|i| format!("<p>Párrafo {i}, con bastante texto para que la línea se rompa varias veces.</p>")))
+            .collect();
+        let st = ReadingStyle { theme: Theme::White, scale: 1.0, omarchy: None };
+        let doc = layout_fragment(&body, &st, viewport(760, 1000, 1.0, false));
+        let pages = paginate_dom(&doc, 900.0);
+        assert!(pages.count() > 1, "need two pages");
+
+        let first = page_text(&doc, pages.top_of(0), pages.top_of(1));
+        let second = page_text(&doc, pages.top_of(1), pages.top_of(1) + pages.extent_of(1));
+        assert_eq!(first[0], (2, "Uno".to_string()), "the heading, with its level");
+        assert!(first[1].1.starts_with("Párrafo 0,"), "{:?}", first[1]);
+        assert!(!second.iter().any(|(_, t)| t == "Uno"), "nothing from page one on page two");
+        assert!(!first.iter().chain(&second).any(|(_, t)| t.contains('\u{AD}')), "no soft hyphens");
+    }
+
     #[test]
     fn a_saved_position_survives_a_reflow() {
         let body: String = (0..60)

@@ -217,7 +217,7 @@ pub fn menu_html(theme: &str, omarchy: bool, folders: &[String], adding: Option<
         .iter()
         .map(|t| {
             format!(
-                r#"<div class="row{on}" data-set="theme:{low}"><span class="tick">{mark}</span>{name}</div>"#,
+                r#"<div class="row{on}" data-set="theme:{low}" data-label="{name}"><span class="tick">{mark}</span>{name}</div>"#,
                 low = t.to_lowercase(),
                 name = tr!(&format!("theme-{}", t.to_lowercase())),
                 on = if *t == theme { " on" } else { "" },
@@ -230,7 +230,8 @@ pub fn menu_html(theme: &str, omarchy: bool, folders: &[String], adding: Option<
         .iter()
         .map(|f| {
             format!(
-                r#"<div class="row" data-set="drop:{f}"><span class="tick">×</span>{f}</div>"#,
+                r#"<div class="row" data-set="drop:{f}" data-label="{label}"><span class="tick">×</span>{f}</div>"#,
+                label = escape(&tr!("settings-drop-folder", folder = f.as_str())),
                 f = escape(f)
             )
         })
@@ -242,7 +243,7 @@ pub fn menu_html(theme: &str, omarchy: bool, folders: &[String], adding: Option<
             escape(typed)
         ),
         None => format!(
-            r#"<div class="row" data-set="add"><span class="tick">+</span>{}</div>"#,
+            r#"<div class="row" data-set="add" data-label="{0}"><span class="tick">+</span>{0}</div>"#,
             tr!("settings-add-folder")
         ),
     };

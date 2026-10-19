@@ -240,6 +240,11 @@ us while blitz-dom is pre-1.0.
 - External links: confirmation dialog showing the real destination, then
   `xdg-open` via portal. Nothing leaves without an explicit choice.
 
+- Screen-reader support talks to the session's AT-SPI bus over D-Bus
+  (`accesskit_winit`). That is local IPC to the desktop's own accessibility
+  registry, not a network connection, and it carries nothing until an
+  assistive technology asks for the tree.
+
 Not linking an HTTP client at all makes the guarantee structural rather than a
 code path someone can regress. A reading application knows what you read and
 when; that data must not be able to leave.
@@ -281,9 +286,43 @@ navigation · CFI position persistence · text selection and copy · search insi
 book · bookmarks · highlights and notes · screen-reader support via AccessKit ·
 collections and tags · AZW3/MOBI import.
 
-`accessibility` and `accesskit` are **default features of blitz-dom**, so
-screen-reader support is nearer to free than it looks. A reading application
-without it would be a poor choice.
+Screen-reader support is built, but **not on blitz-dom's own AccessKit
+builder**. That builder walks one document and gives nodes no names, bounds or
+actions, while the window is five documents painted over each other (page, HUD,
+contents, grid, menu). `src/a11y.rs` builds the tree from app state instead:
+
+- Library: the search field, the Settings button, and a list of books
+  ("Title, Author"), with focus on the selected card.
+- Reading: a toolbar of the HUD's controls, with spoken names for the glyph
+  ones ("Larger text", "Columns: 1"). The page is a document whose name is the
+  text of the lines on screen, both columns; it gets a new id on every turn, so
+  focus moves and the screen reader reads the new page.
+- Contents, marks, search hits: a list, with focus on the selected entry.
+- The open menu: menu items (themes as checked radio items), with focus on the
+  row the arrows reached.
+
+Clicks and focus requests from the screen reader go through the same dispatch
+as a mouse click (`hud_do`, `menu_do`). Every update sends the whole tree, a
+few dozen nodes; nothing is built unless an assistive technology is listening.
+The window starts hidden, because the adapter must exist before the first show.
+
+`accesskit_winit` 0.34 is used, which brings in a newer `accesskit` alongside
+the 0.17 that blitz-dom pins. Both are small; the D-Bus stack is the weight,
+and either version needs it.
+
+**Keyboard menus.** F10, or the Menu key, opens the view's menu: the settings
+panel in the library, the context menu on a page. Arrows (Home/End too) move
+the same hover wash the pointer moves, wrapping at the ends; Enter or Space
+acts on that row; Escape or F10 closes it.
+
+Verified over AT-SPI (libatspi from a script): the library list, the Settings
+click opening the panel with the current theme checked, the reading toolbar and
+the page text, a click on "Larger text" re-laying out the chapter, and F10 plus
+arrows moving focus row by row. Not yet heard through Orca, which is not
+installed here.
+
+ponytail: no bounds on the nodes. A magnifier following focus, or Orca's
+flat review, would need `set_bounds`.
 
 ## 8. Status
 
@@ -565,7 +604,8 @@ tipografía siempre estaba presente", correctly split per line, from an
 accent-free query — the same `highlight_rects` path a stored mark paints through.
 
 Keys: `b` bookmark · drag to select · `h` highlight · `y` copy · `m` marks, then
-`n` note and `x` delete.
+`n` note and `x` delete. F10 or the Menu key opens the context menu; arrows and
+Enter drive it (§7).
 
 **Phase 8, two-column** — the last of §3's three user-facing controls, and the
 one that had never worked. `c` toggles it.

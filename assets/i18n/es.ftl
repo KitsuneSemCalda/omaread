@@ -74,3 +74,12 @@ mark-bookmark = Marcador
 mark-highlight = Resaltado
 mark-chapter = capítulo { $n }
 chapter-n = Capítulo { $n }
+
+## Lector de pantalla: nombres de controles que muestran un glifo o nada
+
+a11y-settings = Ajustes
+a11y-actions = Acciones
+a11y-smaller = Texto más pequeño
+a11y-bigger = Texto más grande
+a11y-columns = Columnas: { $n }
+settings-drop-folder = Dejar de buscar en { $folder }

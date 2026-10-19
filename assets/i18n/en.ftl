@@ -71,3 +71,12 @@ mark-bookmark = Bookmark
 mark-highlight = Highlight
 mark-chapter = chapter { $n }
 chapter-n = Chapter { $n }
+
+## Screen reader: names for controls that show a glyph or nothing
+
+a11y-settings = Settings
+a11y-actions = Actions
+a11y-smaller = Smaller text
+a11y-bigger = Larger text
+a11y-columns = Columns: { $n }
+settings-drop-folder = Stop scanning { $folder }
