@@ -58,6 +58,8 @@ menu-remove-highlight = Remove highlight
 menu-add-note = Add note…
 menu-bookmark-page = Bookmark page
 menu-remove-bookmark = Remove bookmark
+menu-show-in-folder = Show in folder
+menu-remove-book = Remove from library
 
 ## Contents, marks and search
 

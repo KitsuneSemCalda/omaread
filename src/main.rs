@@ -557,7 +557,7 @@ fn main() {
              omaread --check <book.epub>...  headless conformance run\n\
              omaread --shot <book.epub> <chapter> <page> <out.ppm> [hud]\n\
              omaread --index                 index every library book for search\n\n\
-             Library:  type to search · #tag to filter · F2 tag a book\n\
+             Library:  type to search · #tag to filter · F2 tag a book · Del remove · right-click a book: show in folder, remove\n\
                        Enter open · F3 open a file · Tab sort · F5 rescan · Esc clear/quit\n\
              Reading:  ←/→ page · ↑/↓ chapter · g go to page or % · Tab contents · / search · t theme · +/- size · c columns · l library · q quit\n\
                        move the mouse for the menus: marks, contents, size, columns\n\
@@ -1692,6 +1692,17 @@ impl App {
             return true;
         }
 
+        // The library's context menu, on the selected card.
+        if matches!(what.as_str(), "reveal" | "remove") {
+            self.menu = None;
+            match what.as_str() {
+                "reveal" => self.reveal_selected(),
+                _ => self.remove_selected(),
+            }
+            self.request_redraw();
+            return true;
+        }
+
         match what.split_once(':') {
             Some(("theme", name)) => {
                 self.style.theme = Theme::named(name).unwrap_or(Theme::Sepia);
@@ -1725,11 +1736,11 @@ impl App {
     /// It lives in `menu`, like the settings panel, so hover, hit-testing and
     /// painting are the panel's.
     fn open_context_menu(&mut self) {
-        let html = hud::context_html(
-            self.selected().is_some(),
-            self.sel_mark.is_some(),
-            self.page_bookmarked(),
-        );
+        let html = match self.view {
+            View::Library => hud::book_menu_html(self.rows.get(self.selected).is_some_and(|r| !r.missing)),
+            _ => hud::context_html(self.selected().is_some(), self.sel_mark.is_some(), self.page_bookmarked()),
+        };
+        self.adding_folder = None;
 
         let (win_w, win_h) = (self.size.0 as f32 / self.ui_scale(), self.size.1 as f32 / self.ui_scale());
         let (x, y) = self.pointer_in_ui();
@@ -1754,6 +1765,38 @@ impl App {
         self.menu = lay(y.min(win_h - height - 8.0).max(0.0));
         self.hover_menu = None;
         self.request_redraw();
+    }
+
+    /// Show the selected book in the file manager. Off the window's thread,
+    /// like the pickers: the portal may have to start a file manager.
+    fn reveal_selected(&self) {
+        let Some(row) = self.rows.get(self.selected) else { return };
+        let path = PathBuf::from(&row.path);
+        std::thread::spawn(move || {
+            if let Err(e) = portal::reveal(&path) {
+                eprintln!("omaread: {e}");
+            }
+        });
+    }
+
+    /// Take the selected book off the shelf. The managed copy is ours, so it
+    /// goes to the trash; an original in a watched folder is never touched
+    /// (CONTEXT.md §4), and the row stays so the next scan skips it.
+    fn remove_selected(&mut self) {
+        let Some(row) = self.rows.get(self.selected).cloned() else { return };
+        let Some(db) = self.db.clone() else { return };
+        if row.managed && !row.missing {
+            if let Err(e) = portal::trash(Path::new(&row.path)) {
+                eprintln!("omaread: {e}");
+                return;
+            }
+        }
+        if let Ok(d) = db.lock() {
+            if let Err(e) = d.remove_book(&row.hash) {
+                eprintln!("omaread: {e}");
+            }
+        }
+        self.reload_rows();
     }
 
     /// Add whatever folder was typed.
@@ -1981,6 +2024,7 @@ impl App {
                 ("F2", tr!("help-tag")),
                 ("F3", tr!("help-open-file")),
                 ("F5", tr!("help-rescan")),
+                ("Del", tr!("menu-remove-book")),
                 ("F10", tr!("help-settings")),
             ],
             View::Reading => vec![
@@ -3784,6 +3828,8 @@ impl App {
             }
             Key::Named(NamedKey::F5) => self.rescan(),
             Key::Named(NamedKey::F3) => return self.pick(false),
+            // The right-click menu's "Remove from library", from the keyboard.
+            Key::Named(NamedKey::Delete) => self.remove_selected(),
             // The menu key, or F10 where there is none: the panel the cog
             // opens, so it is reachable without a mouse.
             Key::Named(NamedKey::F10 | NamedKey::ContextMenu) => {
@@ -4421,6 +4467,17 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
                 // highlight offers to remove it.
                 self.sel_mark = self.mark_at(self.pointer_in_flow());
                 self.open_context_menu();
+            }
+
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Right,
+                ..
+            } if self.view == View::Library => {
+                if let Some(i) = self.card_under_pointer() {
+                    self.selected = i;
+                    self.open_context_menu();
+                }
             }
 
             WindowEvent::MouseInput { state, button, .. }

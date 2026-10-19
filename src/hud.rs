@@ -100,12 +100,6 @@ pub const CONTEXT_W: f32 = 240.0;
 /// applies is offered. It borrows the settings panel's sheet and `data-set`
 /// rows, so hover and hit-testing are the panel's too.
 pub fn context_html(selection: bool, on_highlight: bool, bookmarked: bool) -> String {
-    let row = |set: &str, label: &str, key: &str| {
-        format!(
-            r#"<div class="row" data-set="{set}" data-label="{0}">{0}<span class="key">{key}</span></div>"#,
-            tr!(label)
-        )
-    };
     let mut rows = String::new();
     if selection {
         rows += &row("copy", "menu-copy", "y");
@@ -121,6 +115,28 @@ pub fn context_html(selection: bool, on_highlight: bool, bookmarked: bool) -> St
         true => row("bookmark", "menu-remove-bookmark", "b"),
         false => row("bookmark", "menu-bookmark-page", "b"),
     };
+    context_doc(&rows)
+}
+
+/// The menu a right click on a library card opens. A ghost row has no file,
+/// so no folder to show.
+pub fn book_menu_html(on_disk: bool) -> String {
+    let mut rows = String::new();
+    if on_disk {
+        rows += &row("reveal", "menu-show-in-folder", "");
+    }
+    rows += &row("remove", "menu-remove-book", "");
+    context_doc(&rows)
+}
+
+fn row(set: &str, label: &str, key: &str) -> String {
+    format!(
+        r#"<div class="row" data-set="{set}" data-label="{0}">{0}<span class="key">{key}</span></div>"#,
+        tr!(label)
+    )
+}
+
+fn context_doc(rows: &str) -> String {
     format!(r#"<!DOCTYPE html><html><body><div class="menu">{rows}</div></body></html>"#)
 }
 

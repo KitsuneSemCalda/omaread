@@ -270,6 +270,11 @@ us while blitz-dom is pre-1.0.
 - **Watched folders are read-only.** Omaread never renames or moves a file it does
   not own.
 - Books deleted on disk keep **ghost rows**, preserving reading progress.
+- **Remove from library** (right-click a card, or Del) sends the managed copy to the
+  desktop trash through the portal and sets `books.removed`: a tombstone, not a
+  delete, or the next scan would re-import the watched-folder original. Opening
+  the book again clears it. Originals are never trashed. "Show in folder" is
+  the portal's `OpenDirectory`, which selects the file.
 - AZW3/MOBI are **read in place, not converted**. They are the same container —
   a PalmDB of PalmDoc- or HUFF/CDIC-compressed text records plus image records —
   so `src/mobi.rs` decodes the whole file at open into XHTML parts

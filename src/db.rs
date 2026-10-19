@@ -132,6 +132,10 @@ impl Db {
             "progress REAL NOT NULL DEFAULT 0",
             // Openings on which the engine panicked, for quarantine.
             "panics INTEGER NOT NULL DEFAULT 0",
+            // Removed from the library by hand. A tombstone, not a delete: the
+            // original may still sit in a watched folder, and a missing row is
+            // what the next scan would import again. Opening it brings it back.
+            "removed INTEGER NOT NULL DEFAULT 0",
         ] {
             let _ = conn.execute(&format!("ALTER TABLE books ADD COLUMN {col}"), []);
         }
@@ -216,7 +220,8 @@ impl Db {
                      title     = excluded.title,
                      last_cfi  = excluded.last_cfi,
                      opened_at = excluded.opened_at,
-                     progress  = excluded.progress",
+                     progress  = excluded.progress,
+                     removed   = 0",
                 params![hash, path, title, cfi, progress],
             )
             .map(|_| ())
@@ -282,7 +287,7 @@ impl Db {
                     last_cfi IS NOT NULL, progress, panics >= {QUARANTINE_AFTER},
                     NOT (?1 = '%%' OR title LIKE ?1 ESCAPE '\\' OR author LIKE ?1 ESCAPE '\\') AS in_text
              FROM books
-             WHERE (?1 = '%%' OR title LIKE ?1 ESCAPE '\\' OR author LIKE ?1 ESCAPE '\\'{full_text})
+             WHERE removed = 0 AND (?1 = '%%' OR title LIKE ?1 ESCAPE '\\' OR author LIKE ?1 ESCAPE '\\'{full_text})
              ORDER BY in_text, {order}"
         );
         let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -315,7 +320,7 @@ impl Db {
             "SELECT file_hash, file_path, title, author, cover IS NOT NULL, managed, missing,
                     last_cfi IS NOT NULL, progress, panics >= {QUARANTINE_AFTER}
              FROM books
-             WHERE file_hash IN (SELECT file_hash FROM tags WHERE tag LIKE ?1)
+             WHERE removed = 0 AND file_hash IN (SELECT file_hash FROM tags WHERE tag LIKE ?1)
              ORDER BY {order}"
         );
         let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -632,7 +637,7 @@ impl Db {
         // One row per title, the most recently touched copy of it first.
         if let Ok(mut stmt) = self.conn.prepare(
             "SELECT title, author, max(coalesce(opened_at, added_at)) FROM books
-             WHERE missing = 0 AND title LIKE ?1 ESCAPE '\\'
+             WHERE missing = 0 AND removed = 0 AND title LIKE ?1 ESCAPE '\\'
              GROUP BY title COLLATE NOCASE
              ORDER BY 3 DESC
              LIMIT ?2",
@@ -652,7 +657,7 @@ impl Db {
 
         if let Ok(mut stmt) = self.conn.prepare(
             "SELECT DISTINCT author FROM books
-             WHERE author <> '' AND missing = 0 AND author LIKE ?1 ESCAPE '\\'
+             WHERE author <> '' AND missing = 0 AND removed = 0 AND author LIKE ?1 ESCAPE '\\'
              ORDER BY author COLLATE NOCASE
              LIMIT ?2",
         ) {
@@ -686,6 +691,15 @@ impl Db {
             .ok()
             .flatten()
             .flatten()
+    }
+
+    /// Take a book off the shelf. Its row stays, with its progress and marks,
+    /// so a scan does not import it again (see the `removed` column).
+    pub fn remove_book(&self, hash: &str) -> Result<(), String> {
+        self.conn
+            .execute("UPDATE books SET removed = 1 WHERE file_hash = ?1", params![hash])
+            .map(drop)
+            .map_err(|e| e.to_string())
     }
 
     /// Flag rows whose file is gone. Ghost rows keep their reading progress
@@ -851,6 +865,25 @@ mod tests {
         assert_eq!(db.note_panic("h1"), Ok(2));
         assert!(flagged());
         assert!(db.note_panic("unknown").is_err(), "no row, nothing counted");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A removed book leaves the shelf and stays off it through a rescan, but
+    /// opening it again puts it back.
+    #[test]
+    fn a_removed_book_stays_removed_until_opened() {
+        let dir = std::env::temp_dir().join(format!("omaread-rm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = super::Db::open_at(dir.join("r.db")).unwrap();
+        let book = super::BookRow { hash: "h1".into(), path: "/h1.epub".into(), ..Default::default() };
+        db.upsert_book(&book).unwrap();
+        let shelf = || db.books("", super::Sort::Title).unwrap().len();
+
+        db.remove_book("h1").unwrap();
+        assert_eq!(shelf(), 0);
+        assert!(db.has("h1"), "the row stays, so a scan skips the file");
+        db.save_progress("h1", "/h1.epub", "", "epubcfi(/6/2!/4)", 0.1).unwrap();
+        assert_eq!(shelf(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -1,16 +1,18 @@
 //! File and folder pickers, through xdg-desktop-portal (CONTEXT.md §12). The
 //! dialog is the desktop's own, and under a sandbox the portal is also what
-//! grants access to whatever was picked.
+//! grants access to whatever was picked. Showing a book in its folder and
+//! trashing one go the same way.
 //!
 //! Spoken to over D-Bus directly: zbus is already in the tree for AccessKit,
 //! and `ashpd` or `rfd` would bring an async runtime to wrap one method call
 //! and one signal.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::os::fd::AsFd;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use zbus::blocking::{Connection, MessageIterator};
-use zbus::zvariant::{OwnedValue, Value};
+use zbus::zvariant::{Fd, OwnedValue, Value};
 
 /// Ask for a book, or with `folder` a folder. Blocks until the dialog closes,
 /// so call it off the window's thread. `Ok(None)` is a cancel; an error means
@@ -44,8 +46,8 @@ pub fn pick(folder: bool, title: &str) -> Result<Option<PathBuf>, String> {
         options.insert("filters", vec![("EPUB, AZW3, MOBI", books)].into());
     }
     conn.call_method(
-        Some("org.freedesktop.portal.Desktop"),
-        "/org/freedesktop/portal/desktop",
+        DEST,
+        OBJECT,
         Some("org.freedesktop.portal.FileChooser"),
         "OpenFile",
         &("", title, options),
@@ -64,6 +66,39 @@ pub fn pick(folder: bool, title: &str) -> Result<Option<PathBuf>, String> {
         .and_then(|v| Vec::<String>::try_from(v).ok())
         .unwrap_or_default();
     Ok(uris.first().and_then(|u| file_path(u)))
+}
+
+/// Open the file manager on the folder holding `path`, with it selected.
+pub fn reveal(path: &Path) -> Result<(), String> {
+    let (conn, file) = desktop(path)?;
+    let options: HashMap<&str, Value> = HashMap::new();
+    conn.call_method(DEST, OBJECT, Some("org.freedesktop.portal.OpenURI"), "OpenDirectory", &("", Fd::from(file.as_fd()), options))
+        .map(drop)
+        .map_err(|e| format!("open-uri portal: {e}"))
+}
+
+/// Move `path` to the desktop's trash, from where it can be put back.
+pub fn trash(path: &Path) -> Result<(), String> {
+    let (conn, file) = desktop(path)?;
+    let reply = conn
+        .call_method(DEST, OBJECT, Some("org.freedesktop.portal.Trash"), "TrashFile", &(Fd::from(file.as_fd()),))
+        .map_err(|e| format!("trash portal: {e}"))?;
+    // The portal answers 1 for done, 0 for failed.
+    match reply.body().deserialize::<u32>() {
+        Ok(1) => Ok(()),
+        _ => Err(format!("trash portal: could not trash {}", path.display())),
+    }
+}
+
+const DEST: Option<&str> = Some("org.freedesktop.portal.Desktop");
+const OBJECT: &str = "/org/freedesktop/portal/desktop";
+
+/// The session bus, and `path` open: a portal takes a file as a descriptor,
+/// not a path.
+fn desktop(path: &Path) -> Result<(Connection, std::fs::File), String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let conn = Connection::session().map_err(|e| format!("portal: {e}"))?;
+    Ok((conn, file))
 }
 
 /// A `file://` URI as a path: percent-escapes decoded to the raw bytes they

@@ -61,6 +61,8 @@ menu-remove-highlight = Quitar resaltado
 menu-add-note = Añadir nota…
 menu-bookmark-page = Marcar página
 menu-remove-bookmark = Quitar marcador
+menu-show-in-folder = Mostrar en la carpeta
+menu-remove-book = Quitar de la biblioteca
 
 ## Índice, marcas y búsqueda
 
