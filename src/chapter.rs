@@ -11,10 +11,30 @@ use crate::style::{self, ReadingStyle};
 use blitz_dom::net::Resource;
 use blitz_dom::{BaseDocument, DocumentConfig, NodeData};
 use blitz_html::HtmlDocument;
-use blitz_traits::net::{Bytes, NetProvider, SharedCallback};
+use blitz_traits::net::{NetProvider, SharedCallback};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+
+thread_local! {
+    /// The font context every document starts from, cloned. Building one
+    /// scans the system's fonts through fontconfig: 22ms, and blitz paid it for
+    /// every document it made — two per library rebuild, one per chapter, menu,
+    /// overlay — which was most of what made the library feel heavy. A clone
+    /// shares the scan (fontique keeps it behind an `Arc`) and the bundled
+    /// faces, registered here once.
+    ///
+    /// Supplying a context makes blitz skip its own list-bullet font. Its
+    /// markers ask for "Bullet, monospace, sans-serif", so they come from the
+    /// system monospace instead, which carries • ◦ ▪.
+    static FONT_CTX: parley::FontContext = {
+        let mut ctx = parley::FontContext::default();
+        for face in FONTS {
+            ctx.collection.register_fonts(parley::fontique::Blob::new(Arc::new(face) as _), None);
+        }
+        ctx
+    };
+}
 
 /// The bundled reading faces, embedded in the binary (CONTEXT.md §3). Books'
 /// own `@font-face` is ignored, so these are the faces the reader uses; the
@@ -366,21 +386,10 @@ fn build(
                 base_url: Some(base_url),
                 ua_stylesheets: Some(vec![ua]),
                 net_provider: provider,
+                font_ctx: Some(FONT_CTX.with(Clone::clone)),
                 ..Default::default()
             },
         );
-
-        // Before the first resolve, or the first layout measures the wrong
-        // faces.
-        //
-        // ponytail: registered per document rather than shared through
-        // `DocumentConfig::font_ctx`. Supplying that field makes blitz skip
-        // registering its own list-bullet font, and that font is `pub(crate)`,
-        // so a shared context costs `<li>` markers. Share one — and vendor a
-        // bullet font — if this ever shows up in a profile.
-        for face in FONTS {
-            doc.load_resource(Resource::Font(Bytes::from_static(face)));
-        }
 
         doc.resolve(0.0);
         doc

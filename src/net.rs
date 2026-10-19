@@ -108,19 +108,26 @@ impl NetProvider<Resource> for CoverProvider {
             log_blocked(&url);
             return;
         }
-        let hash = url.path().trim_start_matches('/');
-        let Some(bytes) = self.db.lock().ok().and_then(|d| d.cover(hash)) else { return };
-        let bytes = match bytes.len() > SHRINK_OVER {
-            false => bytes,
-            true => {
-                let small = crate::library::shrink_cover(bytes);
-                if let Ok(db) = self.db.lock() {
-                    let _ = db.set_cover(hash, &small);
+        let hash = url.path().trim_start_matches('/').to_string();
+        let (db, callback) = (self.db.clone(), self.callback.clone());
+        // Off the window's thread, one per cover. Read, decode and fit ran
+        // inside the grid's build, ~3ms a cover: 45ms of every library page
+        // change, spent before anything moved. Now the grid shows at once and
+        // the covers land a few milliseconds behind it, each waking the window.
+        std::thread::spawn(move || {
+            let Some(bytes) = db.lock().ok().and_then(|d| d.cover(&hash)) else { return };
+            let bytes = match bytes.len() > SHRINK_OVER {
+                false => bytes,
+                true => {
+                    let small = crate::library::shrink_cover(bytes);
+                    if let Ok(db) = db.lock() {
+                        let _ = db.set_cover(&hash, &small);
+                    }
+                    small
                 }
-                small
-            }
-        };
-        handler.bytes(doc_id, Bytes::from(bytes), self.callback.clone());
+            };
+            handler.bytes(doc_id, Bytes::from(bytes), callback);
+        });
     }
 }
 

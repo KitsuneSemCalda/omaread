@@ -44,6 +44,36 @@ book. One layout engine, one paint path, one styling language.
 
 `blitz-dom` is pre-1.0 and moves. Vendor it. Forking is an accepted outcome.
 
+## 2b. Running it
+
+```sh
+cargo run --release                      # the library
+cargo run --release -- path/to/book.epub # straight into a book (also .azw3, .mobi)
+cargo run --release -- book.epub 7       # ...at spine item 7, a dev shortcut
+```
+
+Release, always: a debug build of Stylo and vello_cpu is too slow to judge by.
+In the app, `?` (or F1) lists the keys of the view you are in; `omaread --help`
+prints all of them.
+
+That run uses the real library — `~/.local/share/omaread/` and
+`~/.config/omaread/`. To try things freely without touching it:
+
+```sh
+XDG_DATA_HOME=/tmp/omaread-try XDG_CONFIG_HOME=/tmp/omaread-try cargo run --release
+```
+
+A fresh database and settings, seeded on first run from `~/Documents` and
+`~/Downloads` (read only, §4); delete `/tmp/omaread-try` to start over. The
+Omarchy palette is still read from the live theme.
+
+On Omarchy the window tiles unless the rules in `assets/omarchy/omaread.lua`
+are installed (§11); a book wants them.
+
+Without a window: `omaread --shot` renders a page or the library to a PPM,
+`omaread --check <books>` runs the conformance sweep, `cargo test --release`
+the suite.
+
 ## 3. Rendering decisions
 
 ### CSS policy: whitelist
@@ -82,11 +112,13 @@ weight the base stylesheet asks for, statics for none of them. Charis SIL is a
 fallback reached for a rare glyph, so it carries no bold — a synthesised one is
 fine there.
 
-The faces are registered per document through `Resource::Font`, not through
-`DocumentConfig::font_ctx`. Supplying that field makes blitz skip registering
-its own list-bullet font, and that font is `pub(crate)` — a shared context costs
-`<li>` markers. Share one, and vendor a bullet font, only if this shows up in a
-profile.
+The faces are registered once, in a per-thread `FontContext` that every
+document gets a clone of through `DocumentConfig::font_ctx` (`chapter::FONT_CTX`).
+It showed up in a profile: left to itself blitz builds a fresh context per
+document, and that scans the system's fonts through fontconfig — 22ms, paid by
+every chapter, menu, overlay and twice per library rebuild (§12b). A clone shares
+the scan. Supplying the context skips blitz's own bullet font; list markers ask
+for "Bullet, monospace, sans-serif" and get the system monospace instead.
 
 On Omarchy, code is set in the desktop's monospace font instead: the base
 stylesheet asks for the generic `monospace`, which fontique resolves through
@@ -1150,6 +1182,33 @@ repaint, so the presses that arrived meanwhile queued up and were delivered
 *after* the switch — in the library, where a click opens whatever card is under
 the pointer, putting you straight back in the book. Measure before believing a
 report about clicks.
+
+**Input to frame, measured** (`OMAREAD_DEBUG_TIME` plus keys sent through
+Hyprland, sandboxed XDG dirs, 588 books). Snappiness was uneven because one
+class of action was slow: anything that rebuilt the library grid took 150–300ms
+while page turns and arrows took ~20ms. Three causes, all fixed:
+
+- **22ms per document of fontconfig** (§3, Fonts). Small documents went from
+  ~27ms to 2ms; F1/F10/Tab from ~48ms to ~23ms.
+- **Covers decoded inside the build**, ~3ms each, ~45ms a page. `CoverProvider`
+  now reads, decodes and fits each one on its own thread; the grid shows at
+  once and covers land a frame or two behind it, each waking the window.
+  Resources carry their document's id and `drain_resources` drops a stale
+  one — a cover finishing after its grid was rebuilt has node ids that mean
+  nothing in the new one.
+- **PageDown, PageUp and the wheel never left the page.** The selection stayed
+  behind, and the rebuild snapped the page back to it: two rebuilds, no
+  movement. The selection now rides along (`ride_along`).
+
+| Library | Before | After |
+|---|---|---|
+| Arrow onto the next page | 164ms | 66ms |
+| PageDown / PageUp | ~300ms, and no move | 57ms |
+| A search keystroke | 120–190ms | 31–79ms |
+| Tab (sort) | 180–260ms | ~70ms |
+
+Not yet chased: some reading frames of ~185ms, seen once on page turns in a
+book opened from the grid — likely image pages through vello_cpu.
 
 Still unfixed and now much smaller: covers are decoded at whatever size the
 publisher shipped. Downscaling at import (and §4's decoded LRU) would take the

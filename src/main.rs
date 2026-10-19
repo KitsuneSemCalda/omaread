@@ -154,6 +154,16 @@ mod tests {
         }
     }
 
+    /// PageDown left the selection behind, and the rebuild then snapped the
+    /// page back to it: the library could not be paged at all.
+    #[test]
+    fn the_library_selection_rides_a_page_turn() {
+        assert_eq!(super::ride_along(7, 0..15, 15..30), 22, "same place, next page");
+        assert_eq!(super::ride_along(22, 15..30, 0..15), 7, "and back");
+        assert_eq!(super::ride_along(12, 0..15, 15..18), 17, "a short last page");
+        assert_eq!(super::ride_along(16, 0..15, 15..30), 16, "already there");
+    }
+
     /// A superscript note reference is a ten-pixel target inside a sentence.
     /// Landing beside it has to count, or footnotes are unopenable.
     #[test]
@@ -457,12 +467,19 @@ fn main() {
 
 /// Resources arrive from the provider on whatever thread fetched them; funnel
 /// them back to the event loop rather than touching the document directly.
-struct ChannelCallback(Sender<Resource>);
+/// Hands a fetched resource to the window's thread, tagged with the document
+/// that asked for it, and wakes the window when one was given: covers are
+/// decoded off the window's thread (`net::CoverProvider`) and arrive while the
+/// loop sleeps.
+struct ChannelCallback(Sender<(usize, Resource)>, Option<Arc<Window>>);
 
 impl NetCallback<Resource> for ChannelCallback {
-    fn call(&self, _doc_id: usize, result: Result<Resource, Option<String>>) {
+    fn call(&self, doc_id: usize, result: Result<Resource, Option<String>>) {
         if let Ok(resource) = result {
-            let _ = self.0.send(resource);
+            let _ = self.0.send((doc_id, resource));
+            if let Some(w) = &self.1 {
+                w.request_redraw();
+            }
         }
     }
 }
@@ -602,8 +619,8 @@ struct App {
     a11y: Option<accesskit_winit::Adapter>,
     proxy: Option<EventLoopProxy<accesskit_winit::Event>>,
     renderer: VelloWindowRenderer,
-    net_tx: Sender<Resource>,
-    net_rx: Receiver<Resource>,
+    net_tx: Sender<(usize, Resource)>,
+    net_rx: Receiver<(usize, Resource)>,
     size: (u32, u32),
     scale: f32,
     /// Omarchy's text size as a factor (`style::omarchy_ui_scale`). The chrome
@@ -1183,7 +1200,7 @@ impl App {
         // once the document is built; no trip through the event loop.
         let (tx, rx) = channel();
         let provider: Arc<dyn blitz_traits::net::NetProvider<Resource>> =
-            Arc::new(net::BookNetProvider::new(book, Arc::new(ChannelCallback(tx))));
+            Arc::new(net::BookNetProvider::new(book, Arc::new(ChannelCallback(tx, None))));
         let bg = self.chrome().bg;
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         let src = format!("{}{}", net::ORIGIN, href.trim_start_matches('/'));
@@ -1196,7 +1213,7 @@ impl App {
         ) else {
             return;
         };
-        for r in rx.try_iter() {
+        for (_, r) in rx.try_iter() {
             fig.doc.load_resource(r);
         }
         chapter::relayout(&mut fig, vp, self.page_height());
@@ -2400,7 +2417,7 @@ impl App {
     }
 
     fn callback(&self) -> SharedCallback<Resource> {
-        Arc::new(ChannelCallback(self.net_tx.clone()))
+        Arc::new(ChannelCallback(self.net_tx.clone(), self.window.clone()))
     }
 
     /// How many columns actually paint.
@@ -2519,11 +2536,21 @@ impl App {
     /// which means anything here.
     fn turn_view(&mut self, forward: bool) {
         let last = self.page_count().saturating_sub(1);
+        let from = self.page;
         self.page = if forward {
             (self.page + 1).min(last)
         } else {
             self.page.saturating_sub(1)
         };
+        // The library's selection rides along, to the same place on the new
+        // page. Left behind, the rebuild snapped straight back to the page it
+        // was on — PageDown and the wheel did nothing but rebuild twice.
+        if self.view == View::Library
+            && let Some(doc) = &self.lib_doc
+        {
+            self.selected =
+                ride_along(self.selected, visible_cards(doc, from), visible_cards(doc, self.page));
+        }
         self.request_redraw();
     }
 
@@ -2720,19 +2747,29 @@ impl App {
     }
 
     fn drain_resources(&mut self) {
-        let pending: Vec<Resource> = self.net_rx.try_iter().collect();
+        let pending: Vec<(usize, Resource)> = self.net_rx.try_iter().collect();
         if pending.is_empty() {
             return;
         }
         // Resources belong to whichever document asked for them: cover images
-        // for the library, figures for a chapter.
+        // for the library, figures for a chapter. A cover decoded off-thread can
+        // land after its grid was rebuilt; that document is gone, and its node
+        // ids mean nothing in this one.
         let loaded = match self.doc_mut() {
-            Some(doc) => catch_unwind(AssertUnwindSafe(|| {
-                for resource in pending {
-                    doc.doc.load_resource(resource);
+            Some(doc) => {
+                let id = doc.doc.id();
+                let mine: Vec<Resource> =
+                    pending.into_iter().filter(|(d, _)| *d == id).map(|(_, r)| r).collect();
+                if mine.is_empty() {
+                    return;
                 }
-            }))
-            .is_ok(),
+                catch_unwind(AssertUnwindSafe(|| {
+                    for resource in mine {
+                        doc.doc.load_resource(resource);
+                    }
+                }))
+                .is_ok()
+            }
             None => return,
         };
 
@@ -3498,6 +3535,15 @@ fn visible_cards(doc: &Chapter, page: usize) -> std::ops::Range<usize> {
         (Some(&a), Some(&b)) => a..b + 1,
         _ => 0..0,
     }
+}
+
+/// Where a library selection lands when the page turns under it: the same
+/// place on the new page, or the new page's last card if it is shorter.
+fn ride_along(selected: usize, old: std::ops::Range<usize>, new: std::ops::Range<usize>) -> usize {
+    if new.is_empty() || new.contains(&selected) {
+        return selected;
+    }
+    (new.start + selected.saturating_sub(old.start)).min(new.end - 1)
 }
 
 /// The page a `data-index` row falls on. Both list views mark their rows this
