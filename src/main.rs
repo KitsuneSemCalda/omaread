@@ -11,6 +11,7 @@ mod db;
 mod grid;
 mod hud;
 mod hyphen;
+mod i18n;
 mod library;
 mod mobi;
 mod paginate;
@@ -705,7 +706,7 @@ impl App {
             return db
                 .all_tags(prefix)
                 .into_iter()
-                .map(|(tag, n)| (format!("#{tag}"), format!("{n} book{}", plural(n))))
+                .map(|(tag, n)| (format!("#{tag}"), i18n::tr!("books-count", n = n)))
                 .collect();
         }
         match self.query.trim().is_empty() {
@@ -1470,10 +1471,10 @@ impl App {
     /// a contradiction — "back to page 5" from 32% of the way in.
     fn here_label(&self) -> String {
         match self.measured_pages() {
-            Some(_) => format!("Back to page {}", self.book_page().0),
+            Some(_) => i18n::tr!("hud-back-to-page", page = self.book_page().0),
             // Not measured, so there is no honest page number for the book —
             // the readout says a percentage here too.
-            None => format!("Back to {}%", (self.progress() * 100.0).round() as u8),
+            None => i18n::tr!("hud-back-to-percent", percent = (self.progress() * 100.0).round() as u8),
         }
     }
 
@@ -1487,7 +1488,7 @@ impl App {
         match (self.show_page, self.measured_pages().is_some()) {
             (true, true) => {
                 let (page, total) = self.book_page();
-                format!("page {page} of {total}")
+                i18n::tr!("hud-page-of", page = page, total = total)
             }
             _ => format!("{}%", (self.progress() * 100.0).round() as u8),
         }
@@ -1782,20 +1783,20 @@ impl App {
         let n = entries.len();
         let (heading, subtitle) = match self.toc_mode {
             TocMode::Search => (
-                "Search",
-                format!("“{}” — {n} hit{} in this book", self.find, plural(n)),
+                i18n::tr!("toc-search"),
+                i18n::tr!("toc-search-hits", query = self.find.as_str(), n = n),
             ),
             TocMode::Marks => (
-                "Marks",
+                i18n::tr!("toc-marks"),
                 match &self.noting {
-                    Some(_) => format!("note: {}|", self.note),
-                    None => format!("{n} bookmark{} and highlights", plural(n)),
+                    Some(_) => i18n::tr!("toc-note-typing", note = self.note.as_str()),
+                    None => i18n::tr!("toc-marks-count", n = n),
                 },
             ),
-            TocMode::Contents => ("Contents", book.title.clone()),
+            TocMode::Contents => (i18n::tr!("toc-contents"), book.title.clone()),
         };
         let (bg, fg, subtle, panel) = self.chrome();
-        let html = toc::html(&entries, heading, &subtitle, self.index, self.toc_sel);
+        let html = toc::html(&entries, &heading, &subtitle, self.index, self.toc_sel);
         let ua = toc::stylesheet(&bg, &fg, &subtle, &panel);
         self.toc_doc =
             chapter::layout_document(html, ua, None, self.viewport(), self.page_height());
@@ -1812,9 +1813,12 @@ impl App {
                     .iter()
                     .map(|m| {
                         let spine = cfi::Cfi::parse(&m.cfi).map_or(0, |c| c.spine);
-                        let kind = if m.is_bookmark() { "Bookmark" } else { "Highlight" };
+                        let kind = match m.is_bookmark() {
+                            true => i18n::tr!("mark-bookmark"),
+                            false => i18n::tr!("mark-highlight"),
+                        };
                         let body = match (m.text.is_empty(), m.note.is_empty()) {
-                            (true, true) => format!("chapter {}", spine + 1),
+                            (true, true) => i18n::tr!("mark-chapter", n = spine + 1),
                             (true, false) => m.note.clone(),
                             (false, true) => m.text.clone(),
                             (false, false) => format!("{} — {}", m.text, m.note),
@@ -1846,7 +1850,7 @@ impl App {
                     .filter(|e| e.spine <= hit.spine)
                     .next_back()
                     .map(|e| e.label.clone())
-                    .unwrap_or_else(|| format!("Chapter {}", hit.spine + 1));
+                    .unwrap_or_else(|| i18n::tr!("chapter-n", n = hit.spine + 1));
                 book::TocEntry {
                     label: format!("{where_} · {}", hit.snippet),
                     depth: 0,

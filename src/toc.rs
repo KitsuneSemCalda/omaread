@@ -29,7 +29,7 @@ pub fn html(
         .collect();
 
     let body = match entries.is_empty() {
-        true => r#"<div class="empty">Nothing found.</div>"#.to_string(),
+        true => format!(r#"<div class="empty">{}</div>"#, crate::i18n::tr!("toc-nothing-found")),
         false => format!(r#"<div class="list">{rows}</div>"#),
     };
 

@@ -7,6 +7,7 @@
 //! of it via `paint::overlay`.
 
 use crate::grid::escape;
+use crate::i18n::tr;
 
 /// Height of a bar and the window inset, in CSS px. Both bars are in normal
 /// flow, so the bottom one is placed by a computed margin.
@@ -31,30 +32,34 @@ pub fn html(
 
     // Once the pointer is inside a highlight, the useful offer is removing it.
     let (mark_action, mark_label) = match on_highlight {
-        true => ("unhighlight", "Remove"),
-        false => ("highlight", "Highlight"),
+        true => ("unhighlight", tr!("hud-remove")),
+        false => ("highlight", tr!("hud-highlight")),
     };
 
     format!(
         r#"<!DOCTYPE html>
 <html><body>
 <div class="hud">
-  <span class="btn" data-hud="bookmark"><span class="ico" data-icon="bookmark"></span><span class="lbl">Bookmark</span></span>
-  <span class="btn" data-hud="contents"><span class="ico" data-icon="contents"></span><span class="lbl">Contents</span></span>
+  <span class="btn" data-hud="bookmark"><span class="ico" data-icon="bookmark"></span><span class="lbl">{bookmark}</span></span>
+  <span class="btn" data-hud="contents"><span class="ico" data-icon="contents"></span><span class="lbl">{contents}</span></span>
   <span class="btn" data-hud="{mark_action}"><span class="ico" data-icon="highlight"></span><span class="lbl">{mark_label}</span></span>
   <span class="grow"></span>
   <span class="btn" data-hud="smaller">A−</span>
   <span class="btn" data-hud="bigger">A+</span>
-  <span class="btn" data-hud="columns">{columns} col</span>
+  <span class="btn" data-hud="columns">{columns}</span>
 </div>
 <div class="hud" style="margin-top: {push}px">
-  <span class="btn" data-hud="library"><span class="ico" data-icon="back"></span><span class="lbl">Library</span></span>
+  <span class="btn" data-hud="library"><span class="ico" data-icon="back"></span><span class="lbl">{library}</span></span>
   <span class="title">{title}</span>
   {back}<span class="btn" data-hud="readout">{readout}</span>
 </div>
 </body></html>"#,
         title = escape(title),
         readout = escape(readout),
+        bookmark = tr!("hud-bookmark"),
+        contents = tr!("hud-contents"),
+        columns = tr!("hud-columns", n = columns),
+        library = tr!("hud-library"),
         back = match back {
             Some(label) => {
                 format!(r#"<span class="btn" data-hud="back">{}</span>"#, escape(label))
@@ -73,22 +78,25 @@ pub const CONTEXT_W: f32 = 240.0;
 /// rows, so hover and hit-testing are the panel's too.
 pub fn context_html(selection: bool, on_highlight: bool, bookmarked: bool) -> String {
     let row = |set: &str, label: &str, key: &str| {
-        format!(r#"<div class="row" data-set="{set}">{label}<span class="key">{key}</span></div>"#)
+        format!(
+            r#"<div class="row" data-set="{set}">{}<span class="key">{key}</span></div>"#,
+            tr!(label)
+        )
     };
     let mut rows = String::new();
     if selection {
-        rows += &row("copy", "Copy", "y");
-        rows += &row("highlight", "Highlight", "h");
+        rows += &row("copy", "menu-copy", "y");
+        rows += &row("highlight", "menu-highlight", "h");
     }
     if on_highlight {
-        rows += &row("unhighlight", "Remove highlight", "");
+        rows += &row("unhighlight", "menu-remove-highlight", "");
     }
     if selection || on_highlight {
-        rows += &row("note", "Add note…", "");
+        rows += &row("note", "menu-add-note", "");
     }
     rows += &match bookmarked {
-        true => row("bookmark", "Remove bookmark", "b"),
-        false => row("bookmark", "Bookmark page", "b"),
+        true => row("bookmark", "menu-remove-bookmark", "b"),
+        false => row("bookmark", "menu-bookmark-page", "b"),
     };
     format!(r#"<!DOCTYPE html><html><body><div class="menu">{rows}</div></body></html>"#)
 }

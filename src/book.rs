@@ -294,7 +294,7 @@ fn finish_toc(mut out: Vec<TocEntry>, spine_len: usize) -> Vec<TocEntry> {
     if out.is_empty() {
         out = (0..spine_len)
             .map(|i| TocEntry {
-                label: format!("Chapter {}", i + 1),
+                label: crate::i18n::tr!("chapter-n", n = i + 1),
                 depth: 0,
                 spine: i,
                 fragment: None,

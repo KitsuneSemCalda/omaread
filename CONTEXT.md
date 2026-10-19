@@ -954,8 +954,14 @@ integration degrades to a sensible default elsewhere.
   hardcoded paths, file dialogs through `xdg-desktop-portal` (`ashpd`/`rfd`).
   Retrofitting this is miserable, and it is the same discipline that makes watched
   folders behave correctly under a sandbox.
-- UI in English and Spanish. `fluent-rs` scaffolding from the first commit even
-  while only English strings exist — retrofitting extracted strings is worse.
+- UI in English and Spanish, through `fluent-bundle`. Every user-facing string is
+  a message in `assets/i18n/<lang>.ftl`, looked up with `tr!` (`src/i18n.rs`);
+  nothing user-facing is inlined. The language is the POSIX locale's (`LC_ALL`,
+  then `LC_MESSAGES`, then `LANG`), and English stands in for any message a
+  translation lacks. Omarchy ships in more languages than these two, so **adding
+  one is a `.ftl` file and a line in `LANGS`** — a test fails until the file
+  carries every message `en.ftl` has. Log lines and the `--check`/`--shot`
+  developer output stay English.
 - Hyphenation patterns for `en`/`es`/`ca` regardless of UI language. Unhyphenated
   justified Spanish produces rivers of whitespace; this is load-bearing for the
   aesthetic, not an i18n nicety.

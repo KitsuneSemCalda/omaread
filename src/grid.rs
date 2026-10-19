@@ -4,6 +4,7 @@
 //! blitz-dom pipeline as a book (CONTEXT.md §2). One layout engine, one paint
 //! path, one styling language.
 
+use crate::i18n::tr;
 use crate::db::{BookRow, Sort};
 
 /// Cover images resolve through this origin; the provider reads the blob out of
@@ -59,15 +60,13 @@ pub fn html(
 
     let count = rows.len();
     let heading = if query.trim().is_empty() {
-        format!("{count} book{}", if count == 1 { "" } else { "s" })
+        tr!("books-count", n = count)
     } else {
-        format!("{count} matching “{}”", escape(query))
+        tr!("library-matching", n = count, query = escape(query))
     };
 
     let body = if rows.is_empty() {
-        r#"<div class="empty">Nothing here yet. Put some .epub, .azw3 or .mobi files in a watched
-           folder and press r to rescan.</div>"#
-            .to_string()
+        format!(r#"<div class="empty">{}</div>"#, tr!("library-empty"))
     } else {
         format!(r#"<div class="grid">{cards}</div>"#)
     };
@@ -77,15 +76,16 @@ pub fn html(
 <html><body>
 <div class="bar">
   <div class="brand">
-    <span class="title">Library ({heading})</span>
-    <span class="meta"> · sorted by {sort}</span>
+    <span class="title">{title}</span>
+    <span class="meta"> · {sort}</span>
   </div>
   {search}
   <span class="gear" data-menu="settings" data-icon="gear"></span>
 </div>
 {body}
 </body></html>"#,
-        sort = sort.label(),
+        title = tr!("library-title", heading = heading),
+        sort = tr!("library-sorted-by", sort = sort.label()),
         search = search_form(query, suggestions, tagging),
     )
 }
@@ -103,10 +103,11 @@ fn search_form(
     let field = match (tagging, query.is_empty()) {
         // Tagging borrows the same box: one place where typing shows up.
         (Some(tag), _) => format!(
-            r#"<span class="hint">tag </span><span class="typed">#{}</span>"#,
+            r#"<span class="hint">{} </span><span class="typed">#{}</span>"#,
+            tr!("search-tag"),
             escape(tag)
         ),
-        (None, true) => r#"<span class="hint">Type to search</span>"#.to_string(),
+        (None, true) => format!(r#"<span class="hint">{}</span>"#, tr!("search-hint")),
         (None, false) => format!(r#"<span class="typed">{}</span>"#, escape(query)),
     };
 
@@ -202,7 +203,7 @@ fn card(index: usize, b: &BookRow, with_cover: bool) -> String {
         },
         hash = escape(&b.hash),
         title = escape(&clamp(&b.title, 34)),
-        author = escape(&clamp(if b.missing { "file missing" } else { &b.author }, 24)),
+        author = escape(&clamp(&if b.missing { tr!("library-file-missing") } else { b.author.clone() }, 24)),
     )
 }
 
@@ -216,8 +217,9 @@ pub fn menu_html(theme: &str, omarchy: bool, folders: &[String], adding: Option<
         .iter()
         .map(|t| {
             format!(
-                r#"<div class="row{on}" data-set="theme:{low}"><span class="tick">{mark}</span>{t}</div>"#,
+                r#"<div class="row{on}" data-set="theme:{low}"><span class="tick">{mark}</span>{name}</div>"#,
                 low = t.to_lowercase(),
+                name = tr!(&format!("theme-{}", t.to_lowercase())),
                 on = if *t == theme { " on" } else { "" },
                 mark = if *t == theme { "•" } else { "" },
             )
@@ -239,19 +241,24 @@ pub fn menu_html(theme: &str, omarchy: bool, folders: &[String], adding: Option<
             r#"<div class="row typing"><span class="tick">+</span>{}<span class="caret">|</span></div>"#,
             escape(typed)
         ),
-        None => r#"<div class="row" data-set="add"><span class="tick">+</span>Add a folder…</div>"#
-            .to_string(),
+        None => format!(
+            r#"<div class="row" data-set="add"><span class="tick">+</span>{}</div>"#,
+            tr!("settings-add-folder")
+        ),
     };
 
     format!(
         r#"<!DOCTYPE html><html><body><div class="menu">
-  <div class="head">Theme</div>
+  <div class="head">{theme_head}</div>
   {themes}
-  <div class="head">Folders scanned for books</div>
+  <div class="head">{folders_head}</div>
   {dirs}
   {add}
-  <div class="foot">Enter to add · click a folder to drop it · F5 rescans · Esc closes</div>
-</div></body></html>"#
+  <div class="foot">{help}</div>
+</div></body></html>"#,
+        theme_head = tr!("settings-theme"),
+        folders_head = tr!("settings-folders"),
+        help = tr!("settings-help"),
     )
 }
 

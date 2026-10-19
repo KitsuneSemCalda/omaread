@@ -26,12 +26,12 @@ impl Sort {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Sort::Recent => "Recent",
-            Sort::Title => "Title",
-            Sort::Author => "Author",
-        }
+    pub fn label(self) -> String {
+        crate::i18n::tr!(match self {
+            Sort::Recent => "sort-recent",
+            Sort::Title => "sort-title",
+            Sort::Author => "sort-author",
+        })
     }
 }
 
@@ -612,7 +612,7 @@ impl Db {
                 let title: String = r.get(0)?;
                 let author: String = r.get(1)?;
                 let hint = match author.is_empty() {
-                    true => "book".to_string(),
+                    true => crate::i18n::tr!("suggest-book"),
                     false => author,
                 };
                 Ok((title, hint))
@@ -628,7 +628,7 @@ impl Db {
              LIMIT ?2",
         ) {
             if let Ok(rows) = stmt.query_map(params![like, limit as i64], |r| {
-                Ok((r.get::<_, String>(0)?, "author".to_string()))
+                Ok((r.get::<_, String>(0)?, crate::i18n::tr!("suggest-author")))
             }) {
                 out.extend(rows.filter_map(Result::ok));
             }
