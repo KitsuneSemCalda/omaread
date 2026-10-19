@@ -56,6 +56,11 @@ const NOTED: Color = Color::from_rgb8(0xe0, 0x9a, 0x00);
 /// Omarchy's image picker marks its unselected slices the same way, and the
 /// selected card gets the accent, as the picker's selected slice does.
 const CARD_HOVER_ALPHA: f32 = 0.28;
+/// How far outside the card its ring is drawn, in CSS pixels. On the card's
+/// edge the ring touched the title and author, which start there; outside it,
+/// cover and text both get air. Well inside half of `grid::GAP`, so
+/// neighbouring rings never meet.
+const CARD_RING: f32 = 8.0;
 /// A HUD control or menu row under the pointer: Omarchy's hover-cursor state,
 /// a text-colour fill and a fainter hairline (`[controls]` in its shell.toml).
 const HOVER_FILL_ALPHA: f32 = 0.08;
@@ -3204,7 +3209,8 @@ impl App {
         let card_rect = |index: usize| -> Option<(f32, f32, f32, f32)> {
             let doc = self.lib_doc.as_ref()?;
             let node = find_by_attr(doc.dom(), 0, "data-index", &index.to_string())?;
-            chapter::node_rect(doc.dom(), node)
+            let (x, y, w, h) = chapter::node_rect(doc.dom(), node)?;
+            Some((x - CARD_RING, y - CARD_RING, w + 2.0 * CARD_RING, h + 2.0 * CARD_RING))
         };
         let (selected_card, hovered_card) = match self.view {
             View::Library => (
@@ -3588,10 +3594,20 @@ impl App {
             return None;
         }
         let doc = self.lib_doc.as_ref()?;
-        let x = self.cursor.0 / self.scale;
-        let y = self.cursor.1 / self.scale - self.page_margin() + doc.pages.top_of(self.page);
+        let (x, y) = self.pointer_on_page(doc)?;
         let hit = doc.doc.hit(x, y)?;
         ancestor_attr(doc.dom(), hit.node_id, "data-index")?.parse().ok()
+    }
+
+    /// The pointer in a chrome page's flow, or `None` over the margins. What
+    /// lies there is masked off and belongs to the page before or after: the
+    /// next row's card took the hover ring, painted over the mask, and a click
+    /// in the margin opened a book nobody could see.
+    fn pointer_on_page(&self, doc: &Chapter) -> Option<(f32, f32)> {
+        let y = self.cursor.1 / self.scale - self.page_margin();
+        (0.0..doc.pages.extent_of(self.page))
+            .contains(&y)
+            .then(|| (self.cursor.0 / self.scale, doc.pages.flow_y(self.page, y)))
     }
 
     /// Open whatever is under the pointer. Coordinates are in CSS px relative
@@ -3601,10 +3617,7 @@ impl App {
             return;
         }
         let Some(doc) = self.doc() else { return };
-        let margin = self.page_margin();
-        let x = self.cursor.0 / self.scale;
-        let y = self.cursor.1 / self.scale - margin + doc.pages.top_of(self.page);
-
+        let Some((x, y)) = self.pointer_on_page(doc) else { return };
         let Some(hit) = doc.doc.hit(x, y) else { return };
         match self.view {
             View::Library => {

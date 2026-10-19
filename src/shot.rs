@@ -326,7 +326,12 @@ fn library_shot(args: &[String]) -> i32 {
             {
                 paint::outline(
                     scene,
-                    (rect.0, rect.1 + margin, rect.2, rect.3),
+                    (
+                        rect.0 - crate::CARD_RING,
+                        rect.1 + margin - crate::CARD_RING,
+                        rect.2 + 2.0 * crate::CARD_RING,
+                        rect.3 + 2.0 * crate::CARD_RING,
+                    ),
                     crate::parse_hex(&chrome.accent),
                     2.0,
                     1.0,
