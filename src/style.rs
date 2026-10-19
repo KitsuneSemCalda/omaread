@@ -17,6 +17,11 @@ pub const GUTTER_EM: f32 = 1.75;
 /// page and leave every page in between running to the window edge.
 pub const PAGE_MARGIN_EM: f32 = 2.5;
 
+/// The same margin for the library and the contents, in CSS px. Those are
+/// chrome: a book's margin scaled with the reading size put a 50–80px band of
+/// nothing above the library's heading.
+pub const CHROME_MARGIN: f32 = 20.0;
+
 /// Reading themes. Four paper themes, plus the active Omarchy theme for visual
 /// coherence with the desktop (CONTEXT.md §11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -287,8 +287,7 @@ fn library_shot(args: &[String]) -> i32 {
     println!("library: {} books, {} suggestions", rows.len(), suggestions.len());
 
     let (w, h) = size_from_env();
-    let style = ReadingStyle::default();
-    let margin = PAGE_MARGIN_EM * style.font_px();
+    let margin = style::CHROME_MARGIN;
     let page_height = (h as f32 - 2.0 * margin).max(1.0);
     // Paper White unless asked, so a shot is the same on any machine; `omarchy`
     // takes the desktop's palette, as the window does.

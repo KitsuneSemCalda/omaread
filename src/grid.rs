@@ -66,27 +66,26 @@ pub fn html(
         tr!("library-matching", n = count, query = escape(query))
     };
 
-    let body = if rows.is_empty() {
-        format!(r#"<div class="empty">{}</div>"#, tr!("library-empty"))
-    } else {
-        format!(r#"<div class="grid">{cards}</div>"#)
+    let body = match rows.is_empty() {
+        true => format!(r#"<div class="empty">{}</div>"#, tr!("library-empty")),
+        false => cards,
     };
 
+    // The bar is the grid's first item, spanning every column, so its edges are
+    // the covers' edges whatever number of columns the window holds.
     format!(
         r#"<!DOCTYPE html>
-<html><body>
+<html><body><div class="grid">
 <div class="bar">
-  <div class="brand">
-    <span class="title">{title}</span>
-    <span class="meta"> · {sort}</span>
-  </div>
+  <span class="title">{title}</span>
+  <span class="meta">{heading} · {sort}</span>
   {search}
   <span class="gear" data-menu="settings" data-icon="gear"></span>
 </div>
 {body}
-</body></html>"#,
-        title = tr!("library-title", heading = heading),
-        sort = tr!("library-sorted-by", sort = sort.label()),
+</div></body></html>"#,
+        title = tr!("hud-library"),
+        sort = sort.label(),
         search = search_form(query, suggestions, tagging),
     )
 }
@@ -165,12 +164,22 @@ fn card(index: usize, b: &BookRow, with_cover: bool) -> String {
     // to depend on whether it had a cover — which made "which cards are on this
     // page" depend on which cards were given covers, which is circular, and the
     // grid rebuilt itself forever. The title is already under the card anyway.
-    let cover = match b.has_cover && with_cover {
-        true => format!(
+    //
+    // A book with no cover at all gets a typeset jacket instead. That depends
+    // on the book alone, never on `with_cover`, so it does not reopen the loop;
+    // and the card is a fixed-height atom, so a run of lines inside it cannot
+    // move a page break.
+    let cover = match (b.has_cover, with_cover) {
+        (true, true) => format!(
             r#"<img class="cover" src="{COVER_ORIGIN}{hash}"/>"#,
             hash = escape(&b.hash)
         ),
-        false => r#"<img class="cover blank"/>"#.to_string(),
+        (true, false) => r#"<img class="cover blank"/>"#.to_string(),
+        (false, _) => format!(
+            r#"<div class="cover jacket"><div class="jt">{}</div><div class="ja">{}</div></div>"#,
+            escape(&clamp(&b.title, 90)),
+            escape(&clamp(&b.author, 40)),
+        ),
     };
 
     let mut classes = String::from("card");
@@ -339,19 +348,24 @@ html {{
 html *, html *::before, html *::after {{ box-sizing: inherit; }}
 html body {{ margin: 0; padding: 0 {SIDE_PAD}px 32px {SIDE_PAD}px; }}
 
-/* Capped and centred like the grid: on a 4K screen a full-width bar put the
-   heading at the far left and the search box a metre away at the right, with
-   the shelf of covers stranded in the middle. */
+/* A grid item spanning every column: see `html`. Title left, the count and
+   order faded at the right, then the search box and the cog. */
 html .bar {{
-  max-width: {grid_w}px;
-  margin: 0 auto;
-  padding: 22px 0 18px 0;
+  grid-column: 1 / -1;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
 }}
-html .brand {{ flex-grow: 1; }}
-html .title {{ font-size: 26px; font-weight: 600; }}
-html .meta {{ font-size: 13px; color: {subtle}; padding-left: 14px; }}
+html .title {{ font-size: 26px; font-weight: 600; flex-shrink: 0; }}
+/* Pushed right; the search box gives way before it does — parley wraps a
+   shrunk line whatever `white-space` says. */
+html .meta {{
+  flex-shrink: 0;
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: 13px;
+  color: {subtle};
+  padding: 0 16px;
+}}
 
 /* An empty box the window paints the cog into — the bundled faces carry no
    symbol glyphs, so every icon here is drawn (CONTEXT.md §9). `display: flex`
@@ -360,12 +374,12 @@ html .gear {{
   display: flex;
   width: 22px;
   height: 22px;
-  margin-top: 8px;
   margin-left: 18px;
+  flex-shrink: 0;
 }}
 
 /* The search column sits at the right of the bar. */
-html .search {{ width: 420px; padding-left: 28px; }}
+html .search {{ flex: 0 1 420px; min-width: 160px; }}
 /* An Omarchy text field: the resting control fill and its hairline. */
 html .field {{
   background: {field};
@@ -394,10 +408,14 @@ html .sug {{
 html .sugtext {{ flex-grow: 1; overflow: hidden; }}
 html .sughint {{ color: {subtle}; font-size: 12px; padding-left: 12px; }}
 
-/* Capped and centred, so a wide screen gets a shelf rather than a wall. */
+/* Capped, so a wide screen gets a shelf rather than a wall. As many fixed
+   columns as fit (`per_row` is the same arithmetic), and the columns centred
+   as a block: a flex row filled from the left and left the spare width at the
+   right, and centring a flex row would centre the last, short row too. */
 html .grid {{
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, {COVER_W}px);
+  justify-content: center;
   gap: {GAP}px;
   max-width: {grid_w}px;
   margin: 0 auto;
@@ -426,6 +444,19 @@ html .cover {{
   image-rendering: pixelated;
 }}
 html .cover.blank {{ background: {panel}; }}
+/* No cover in the book: its title and author, set like the rest of the chrome. */
+html .jacket {{
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 20px;
+  border: 1px solid {border};
+  background: {field};
+  text-align: center;
+  overflow: hidden;
+}}
+html .jt {{ font-size: 17px; font-weight: 600; line-height: 1.35; }}
+html .ja {{ font-size: 13px; color: {subtle}; padding-top: 14px; }}
 
 /* Same 12px slot the started dot had, so `CARD_H` is unchanged. An unread
    book gets the empty slot: a track drawn on every card would read as 361
@@ -442,7 +473,7 @@ html .name {{ font-size: 16px; line-height: 1.25; }}
 html .by {{ font-size: 14px; color: {subtle}; padding-top: 3px; }}
 html .tags {{ font-size: 11px; color: {subtle}; padding-top: 3px; }}
 
-html .empty {{ padding: 40px 4px; color: {subtle}; font-size: 14px; }}
+html .empty {{ grid-column: 1 / -1; padding: 40px 4px; color: {subtle}; font-size: 14px; }}
 "#
     )
 }
@@ -759,22 +790,41 @@ mod tests {
     /// Every card is the same box whether or not it shows a cover: an image is
     /// an unbreakable block to the paginator and text is not, so a card whose
     /// height depended on having a cover made the visible set depend on the
-    /// cover set — and the grid rebuilt itself in a loop.
+    /// cover set — and the grid rebuilt itself in a loop. A coverless book's
+    /// jacket depends on the book alone, never on the cover set, and lays out
+    /// to the same box as a cover.
     #[test]
     fn a_card_is_the_same_box_with_or_without_a_cover() {
         let mut with = row("Con portada", "A");
         with.has_cover = true;
         let without = row("Sin portada", "N");
 
-        let a = html(&[with], "", Sort::Recent, &[], None, 0..1);
-        let b = html(&[without], "", Sort::Recent, &[], None, 0..1);
+        // Given a cover or not, a book with one is always an `<img>`...
+        let a = html(std::slice::from_ref(&with), "", Sort::Recent, &[], None, 0..1);
+        let unloaded = html(std::slice::from_ref(&with), "", Sort::Recent, &[], None, 0..0);
         assert!(a.contains(r#"<img class="cover" src="#), "{a}");
-        assert!(b.contains(r#"<img class="cover blank"/>"#), "{b}");
-        // Same element either way, so the same box and the same atom.
-        assert_eq!(a.matches("<img class=\"cover").count(), 1);
-        assert_eq!(b.matches("<img class=\"cover").count(), 1);
-        // The title still names the book, under the card.
-        assert!(b.contains("Sin portada"));
+        assert!(unloaded.contains(r#"<img class="cover blank"/>"#), "{unloaded}");
+        // ...and a book without one is always its jacket.
+        for covers in [0..1, 0..0] {
+            let b = html(std::slice::from_ref(&without), "", Sort::Recent, &[], None, covers);
+            assert!(b.contains(r#"<div class="cover jacket"><div class="jt">Sin portada</div>"#), "{b}");
+        }
+
+        let doc = crate::chapter::layout_document(
+            html(&[with, without], "", Sort::Recent, &[], None, 0..2),
+            stylesheet(&crate::style::Theme::White.chrome()),
+            None,
+            crate::chapter::viewport(1200, 900, 1.0, false),
+            900.0,
+        )
+        .expect("the grid must lay out");
+        let card = |i: &str| {
+            let n = crate::find_by_attr(doc.dom(), 0, "data-index", i).expect("card");
+            crate::chapter::node_rect(doc.dom(), n).expect("laid out")
+        };
+        let (a, b) = (card("0"), card("1"));
+        assert_eq!((a.2, a.3), (b.2, b.3), "{a:?} vs {b:?}");
+        assert_eq!(a.1, b.1, "one row");
     }
 }
 

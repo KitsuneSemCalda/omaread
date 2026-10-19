@@ -1033,7 +1033,9 @@ integration degrades to a sensible default elsewhere.
   0.08 hovered (plus a 0.25 hairline), 0.18 selected. The accent — selection,
   caret, progress, the selected card — is the theme's `accent` on Omarchy and
   Apple's blue elsewhere. The book, and the note popup that quotes it, stay in
-  Literata.
+  Literata. Chrome views take a fixed 20px margin, not the book's, and `?` (or
+  F1, where `?` would be typed text) lists the current view's keys, as
+  Omarchy's Super + K does.
 - Ship an `omaread.css.tpl` for Omarchy's template-rendering theme mechanism
   (cf. `~/.config/omarchy/themed/alacritty.toml.tpl.sample`) rather than parsing
   theme files ourselves. **Done**, in `assets/omarchy/`. Omarchy renders every

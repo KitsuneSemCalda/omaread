@@ -1589,6 +1589,82 @@ impl App {
         is_note(&tag, &text).then_some(text)
     }
 
+    /// F1 anywhere; `?` wherever it is not text being typed — the library's
+    /// search, a tag, a folder path, the book search, a note.
+    fn wants_help(&self, key: &Key) -> bool {
+        match key {
+            Key::Named(NamedKey::F1) => true,
+            Key::Character(c) if c.as_str() == "?" => match self.view {
+                View::Library => {
+                    self.query.is_empty() && self.tagging.is_none() && self.adding_folder.is_none()
+                }
+                View::Reading => true,
+                View::Toc => self.toc_mode != TocMode::Search && self.noting.is_none(),
+            },
+            _ => false,
+        }
+    }
+
+    /// The keys overlay. Keys are not translated; what they do is.
+    fn open_help(&mut self) {
+        use i18n::tr;
+        let mut rows: Vec<(&str, String)> = match self.view {
+            View::Library => vec![
+                ("← → ↑ ↓", tr!("help-move")),
+                ("Enter", tr!("help-open")),
+                ("a–z", tr!("help-search")),
+                ("Esc", tr!("help-clear-quit")),
+                ("PgUp PgDn", tr!("help-page")),
+                ("Tab", tr!("help-sort")),
+                ("F2", tr!("help-tag")),
+                ("F5", tr!("help-rescan")),
+                ("F10", tr!("help-settings")),
+            ],
+            View::Reading => vec![
+                ("← → Space", tr!("help-turn")),
+                ("↑ ↓", tr!("help-chapter")),
+                ("Tab", tr!("help-contents")),
+                ("/", tr!("help-find")),
+                ("m", tr!("help-marks")),
+                ("b", tr!("help-bookmark")),
+                ("h", tr!("help-highlight")),
+                ("y", tr!("help-copy")),
+                ("t", tr!("help-theme")),
+                ("+ -", tr!("help-size")),
+                ("c", tr!("help-columns")),
+                ("F10", tr!("help-menu")),
+                ("l Esc", tr!("help-library")),
+                ("q", tr!("help-quit")),
+            ],
+            View::Toc => {
+                let mut rows = vec![
+                    ("↑ ↓", tr!("help-move")),
+                    ("Enter", tr!("help-go")),
+                    ("Tab Esc", tr!("help-back")),
+                ];
+                if self.toc_mode == TocMode::Marks {
+                    rows.push(("n", tr!("help-note")));
+                    rows.push(("x", tr!("help-delete")));
+                }
+                if self.toc_mode != TocMode::Search {
+                    rows.push(("l", tr!("help-library")));
+                    rows.push(("q", tr!("help-quit")));
+                }
+                rows
+            }
+        };
+        rows.push(("? F1", tr!("help-help")));
+        let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
+        self.popup = chapter::layout_document(
+            hud::help_html(&rows),
+            hud::help_stylesheet(&self.chrome()),
+            None,
+            vp,
+            self.page_height(),
+        );
+        self.request_redraw();
+    }
+
     fn open_note(&mut self, text: &str) {
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.popup = chapter::layout_document(
@@ -2374,7 +2450,10 @@ impl App {
 
     /// Vertical margin above and below the page, in CSS pixels.
     fn page_margin(&self) -> f32 {
-        PAGE_MARGIN_EM * self.style.font_px()
+        match self.view {
+            View::Reading => PAGE_MARGIN_EM * self.style.font_px(),
+            View::Library | View::Toc => style::CHROME_MARGIN,
+        }
     }
 
     /// Usable height of one page, in CSS pixels — the window less its margins.
@@ -2590,6 +2669,9 @@ impl App {
     /// Hyprland rescales a new window, and was lost to that. A figure goes; it
     /// comes back on the next click.
     fn relay_popup(&mut self) {
+        if self.popup.as_ref().is_some_and(|p| find_by_attr(p.dom(), 0, "data-help", "").is_some()) {
+            return self.open_help();
+        }
         let note = self.popup.take().map(|p| chapter::text_of(p.dom(), 0));
         if let Some(text) = note.filter(|t| !t.is_empty()) {
             self.open_note(&text);
@@ -2940,6 +3022,10 @@ impl App {
             }
             self.request_redraw();
             return;
+        }
+        if self.wants_help(&key) {
+            self.menu = None;
+            return self.open_help();
         }
         match self.view {
             View::Library => self.library_key(event_loop, key),

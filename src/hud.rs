@@ -163,6 +163,64 @@ html .note {{
     )
 }
 
+/// The keys overlay: what this view answers to, as (key, what it does) rows.
+///
+/// It rides the note popup's slot, so any key or click puts it away and
+/// nothing else happens while it is up. `data-help` is how a resize tells it
+/// from a note.
+pub fn help_html(rows: &[(&str, String)]) -> String {
+    let rows: String = rows
+        .iter()
+        .map(|(key, what)| {
+            format!(
+                r#"<div class="k"><span class="key">{}</span><span>{}</span></div>"#,
+                escape(key),
+                escape(what)
+            )
+        })
+        .collect();
+    format!(
+        r#"<!DOCTYPE html><html><body><div class="help" data-help>
+<div class="head">{title}</div>
+{rows}
+<div class="foot">{dismiss}</div>
+</div></body></html>"#,
+        title = tr!("help-title"),
+        dismiss = tr!("help-dismiss"),
+    )
+}
+
+/// An Omarchy panel, centred, keys on the left — the shape of Omarchy's own
+/// keybindings menu (Super + K).
+pub fn help_stylesheet(c: &Chrome) -> String {
+    let Chrome { bg, fg, subtle, font, .. } = c;
+    let border = c.tint(0.4);
+    format!(
+        r#"
+html {{
+  box-sizing: border-box;
+  font-family: {font};
+  background: transparent;
+  color: {fg};
+}}
+html *, html *::before, html *::after {{ box-sizing: inherit; }}
+html body {{ margin: 0; padding: 12vh 24px 0 24px; background: transparent; }}
+html .help {{
+  width: 440px;
+  margin: 0 auto;
+  padding: 14px 20px;
+  border: 1px solid {border};
+  background: {bg};
+  font-size: 14px;
+}}
+html .head {{ font-weight: 600; padding-bottom: 10px; }}
+html .k {{ display: flex; padding: 3px 0; }}
+html .key {{ width: 130px; flex-shrink: 0; font-weight: 600; }}
+html .foot {{ padding-top: 12px; font-size: 12px; color: {subtle}; }}
+"#
+    )
+}
+
 /// `html`-prefixed for the same reason every sheet here is: blitz-dom applies
 /// its own defaults *after* ours (CONTEXT.md §9).
 ///
@@ -238,6 +296,23 @@ mod tests {
         let push = 1000.0 - 2.0 * INSET - 2.0 * BAR;
         assert!(out.contains(&format!("margin-top: {push}px")), "{out}");
         assert!(out.contains("42%"));
+    }
+
+    /// A resize finds the keys overlay by `data-help`, or rebuilds it as a note
+    /// of its own text; and the overlay lays out at all.
+    #[test]
+    fn the_keys_overlay_is_tagged_and_lays_out() {
+        let out = help_html(&[("<", "a & b".into())]);
+        assert!(out.contains("data-help") && out.contains("&lt;") && out.contains("a &amp; b"));
+        let doc = crate::chapter::layout_document(
+            out,
+            help_stylesheet(&crate::style::Theme::White.chrome()),
+            None,
+            crate::chapter::viewport(1200, 900, 1.0, false),
+            900.0,
+        )
+        .expect("the overlay must lay out");
+        assert!(crate::find_by_attr(doc.dom(), 0, "data-help", "").is_some());
     }
 
     /// A window shorter than the bars must not produce a negative margin.
