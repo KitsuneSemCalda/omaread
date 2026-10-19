@@ -211,7 +211,8 @@ fn card(index: usize, b: &BookRow, with_cover: bool) -> String {
 /// Two settings is what there is. It is a document painted over the grid, like
 /// the HUD over a page — not a second window, and not a rebuild of the shelf.
 pub fn menu_html(theme: &str, omarchy: bool, folders: &[String], adding: Option<&str>) -> String {
-    let themes: String = ["White", "Sepia", "Grey", "Night", "Omarchy"][..4 + omarchy as usize]
+    // Omarchy first: it is the default, and the one the app is named for.
+    let themes: String = ["Omarchy", "White", "Sepia", "Grey", "Night"][!omarchy as usize..]
         .iter()
         .map(|t| {
             format!(
@@ -653,6 +654,7 @@ mod tests {
 
         assert!(out.contains(r#"data-set="theme:night""#), "{out}");
         assert!(out.contains(r#"class="row on" data-set="theme:night""#), "the one in use");
+        assert!(out.find("theme:omarchy") < out.find("theme:white"), "the default leads");
         assert_eq!(out.matches("row on").count(), 1, "exactly one theme is current");
         assert!(out.contains(r#"data-set="drop:/home/x/Documents""#));
         assert!(!out.contains("<b>"), "a path injected markup");

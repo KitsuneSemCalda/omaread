@@ -2695,11 +2695,12 @@ impl App {
                 "c" => self.toggle_columns(),
                 "t" => {
                     self.style.theme = match self.style.theme {
+                        Theme::Omarchy => Theme::White,
                         Theme::White => Theme::Sepia,
                         Theme::Sepia => Theme::Grey,
                         Theme::Grey => Theme::Night,
                         Theme::Night if self.style.omarchy.is_some() => Theme::Omarchy,
-                        Theme::Night | Theme::Omarchy => Theme::White,
+                        Theme::Night => Theme::White,
                     };
                     println!("omaread: theme {:?}", self.style.theme);
                     style::set_setting("theme", &format!("{:?}", self.style.theme).to_lowercase());
