@@ -935,6 +935,36 @@ before it was caught; the fix is in `net::in_archive_path` and
 **Version note:** `blitz-dom` resolves to **0.2.4**, not the `0.1.0-alpha.4` that
 public search results suggest. Considerably more mature than advertised.
 
+**Parley coordinates are device pixels, not CSS pixels.** blitz lays text out
+at the window's scale (`layout.scale()`), and `blitz_paint` draws glyphs at
+`translate(content_box * scale)` with Parley's positions as they are. Line
+metrics, selection geometry and `from_point` all speak device pixels. Every
+place that mixes them with CSS positions divides or multiplies by
+`layout.scale()` (`chapter::text_layout` says so). At scale 1 the two agree,
+which is how the mix-up survived every headless run: Omarchy at 1.25x put the
+tenth line of a paragraph two lines below where it was painted, and page breaks
+sliced lines in half. `chapter::tests::lines_are_measured_in_css_pixels_at_
+fractional_scale` holds it.
+
+**Parley 0.6 trims whitespace at every style span's edges**, not only at the
+line's (`TreeBuilder::push_uncommitted_text`). So `<span>the </span><em>entire
+</em><span> world</span>` lays out as "theentireworld", and calibre's span-per-run
+markup loses spaces all over. `chapter::hoist_edge_spaces` moves such spaces just
+outside their element before parsing, where they are plain text between spans
+and survive. Remove it when blitz moves to a Parley that collapses across spans.
+
+**Parley breaks at U+00AD and draws nothing there.** It has no hyphenation, so a
+hyphenated word showed as "Eng / lish". `paint::soft_hyphens` draws the hyphen
+after the last glyph of each line that ends in a soft hyphen, in that run's
+font, size and colour (U+2010, or `-` where the face lacks it). It **hangs**
+past the measure by its own width, because Parley justified the line without it
+and cannot be asked for room. Hanging punctuation is a recognised typographic
+choice; reserving the width inside the measure needs a Parley that hyphenates.
+
+`--check` and `--shot` now hyphenate and (check) load figures, as the window
+does. Without them they were checking a different layout from the one on
+screen.
+
 ## 10. Test library facts
 
 - 372 EPUBs across `~/Documents`, `~/Downloads`, `~/Downloads/Telegram Desktop`.

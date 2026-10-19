@@ -159,10 +159,11 @@ pub fn collect_atoms(dom: &BaseDocument) -> Vec<Atom> {
                 // The parley layout origin is the element's content box.
                 let content_top = abs_y + l.border.top + l.padding.top;
                 let heading = matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6");
+                let s = tl.layout.scale();
                 for line in tl.layout.lines() {
                     let m = line.metrics();
-                    let top = content_top + m.min_coord;
-                    let bottom = content_top + m.max_coord;
+                    let top = content_top + m.min_coord / s;
+                    let bottom = content_top + m.max_coord / s;
                     if bottom > top {
                         let atom = Atom {
                             top,
@@ -285,7 +286,7 @@ pub fn load(
     let href = book.chapter_href(index).unwrap_or_default().to_owned();
 
     // The whitelist policy: publisher CSS never reaches the engine.
-    let mut html = style::strip_publisher_css(&raw);
+    let mut html = hoist_edge_spaces(&style::strip_publisher_css(&raw));
 
     // Justified text without hyphenation opens rivers, badly so in Spanish and
     // Catalan. Parley breaks on U+00AD, so mark the words before parsing.
@@ -454,6 +455,88 @@ pub fn layout_document(
     Some(Chapter { doc, index: usize::MAX, pages })
 }
 
+/// Move whitespace at the inner edge of an element to just outside it:
+/// `<span>the </span><em>entire</em>` becomes `<span>the</span> <em>entire</em>`.
+///
+/// ponytail: parley 0.6 trims whitespace at the start and end of every style
+/// span rather than of the line (`TreeBuilder::push_uncommitted_text`), so a
+/// space inside an element's edge vanished and "the <em>entire</em> world"
+/// in calibre's span-per-run markup read "theentireworld". Outside the
+/// element the space is plain text between spans, which parley keeps. Delete
+/// this when blitz moves to a parley that collapses across spans.
+pub fn hoist_edge_spaces(html: &str) -> String {
+    /// Elements with no content, so nothing to be at the edge of.
+    const VOID: [&str; 14] = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+        "source", "track", "wbr",
+    ];
+    /// Where whitespace is content and must stay where it is.
+    const PRESERVE: [&str; 2] = ["pre", "textarea"];
+    enum Tok<'a> {
+        Text(String),
+        Open(&'a str),
+        Other(&'a str),
+    }
+    let name = |tag: &str| {
+        tag.trim_start_matches(['<', '/'])
+            .split(|c: char| c.is_whitespace() || c == '>' || c == '/')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+
+    let mut out: Vec<Tok> = Vec::new();
+    let mut preserve = 0usize;
+    let mut rest = html;
+    while !rest.is_empty() {
+        let lt = rest.find('<').unwrap_or(rest.len());
+        let (text, tail) = rest.split_at(lt);
+        if !text.is_empty() {
+            let mut text = text.to_string();
+            // Leading space after a run of opening tags goes before the run.
+            let opens = out.iter().rev().take_while(|t| matches!(t, Tok::Open(_))).count();
+            if preserve == 0 && opens > 0 && text.starts_with(|c: char| c.is_ascii_whitespace()) {
+                text = text.trim_start().to_string();
+                out.insert(out.len() - opens, Tok::Text(" ".into()));
+            }
+            out.push(Tok::Text(text));
+        }
+        if tail.is_empty() {
+            break;
+        }
+        let gt = tail.find('>').map_or(tail.len(), |i| i + 1);
+        let tag = &tail[..gt];
+        rest = &tail[gt..];
+        let n = name(tag);
+        let closing = tag.starts_with("</");
+        if PRESERVE.contains(&n.as_str()) {
+            preserve = if closing { preserve.saturating_sub(1) } else { preserve + 1 };
+        }
+        // Trailing space before a closing tag goes after it.
+        if closing && preserve == 0 {
+            if let Some(Tok::Text(t)) = out.last_mut() {
+                if t.ends_with(|c: char| c.is_ascii_whitespace()) {
+                    t.truncate(t.trim_end().len());
+                    out.push(Tok::Other(tag));
+                    out.push(Tok::Text(" ".into()));
+                    continue;
+                }
+            }
+        }
+        let opening = !closing
+            && tag[1..].starts_with(|c: char| c.is_ascii_alphabetic())
+            && !tag.ends_with("/>")
+            && !VOID.contains(&n.as_str());
+        out.push(if opening { Tok::Open(tag) } else { Tok::Other(tag) });
+    }
+    out.iter()
+        .map(|t| match t {
+            Tok::Text(s) => s.as_str(),
+            Tok::Open(s) | Tok::Other(s) => s,
+        })
+        .collect()
+}
+
 /// Lay out a bare HTML fragment with the reading stylesheet. Used by tests to
 /// assert geometry without needing a book on disk.
 #[cfg(test)]
@@ -563,6 +646,10 @@ pub fn text_element(dom: &BaseDocument, mut id: usize) -> Option<usize> {
     }
 }
 
+/// An element's parley layout. Its coordinates are **device pixels**: blitz
+/// lays text out at the window's scale, so divide by `layout.scale()` to get
+/// CSS pixels and multiply to go back. At scale 1 the two agree, which is how
+/// mixing them went unseen until Omarchy ran at 1.25x.
 pub fn text_layout(dom: &BaseDocument, id: usize) -> Option<&blitz_dom::node::TextLayout> {
     let node = dom.get_node(id)?;
     match &node.data {
@@ -605,12 +692,13 @@ pub fn page_text(dom: &BaseDocument, from: f32, to: f32) -> Vec<(u8, String)> {
         if let NodeData::Element(el) = &node.data {
             if let Some(tl) = el.inline_layout_data.as_ref() {
                 let content_top = abs_y + l.border.top + l.padding.top;
+                let s = tl.layout.scale();
                 let text: String = tl
                     .layout
                     .lines()
                     .filter(|line| {
                         let m = line.metrics();
-                        let mid = content_top + (m.min_coord + m.max_coord) / 2.0;
+                        let mid = content_top + (m.min_coord + m.max_coord) / 2.0 / s;
                         span.0 <= mid && mid < span.1
                     })
                     .filter_map(|line| tl.text.get(line.text_range()))
@@ -649,14 +737,15 @@ pub fn selection_rects(
     let (Some(tl), Some((ox, oy))) = (text_layout(dom, id), node_origin(dom, id)) else {
         return Vec::new();
     };
+    let s = tl.layout.scale() as f64;
     sel.geometry(&tl.layout)
         .into_iter()
         .map(|(b, _)| {
             (
-                ox + b.x0 as f32,
-                oy + b.y0 as f32,
-                ox + b.x1 as f32,
-                oy + b.y1 as f32,
+                ox + (b.x0 / s) as f32,
+                oy + (b.y0 / s) as f32,
+                ox + (b.x1 / s) as f32,
+                oy + (b.y1 / s) as f32,
             )
         })
         .collect()
@@ -690,12 +779,14 @@ pub fn highlight_rects(
 }
 
 /// Character offset and count for a byte range in an element's text, plus the
-/// text itself — what a highlight has to store.
+/// text itself — what a highlight has to store, and what a copy puts on the
+/// clipboard. The offsets count the soft hyphens the layout carries; the text
+/// does not carry them, or a pasted word would hide breaks inside it.
 pub fn char_span(dom: &BaseDocument, id: usize, bytes: std::ops::Range<usize>) -> Option<(usize, usize, String)> {
     let tl = text_layout(dom, id)?;
     let text = tl.text.get(bytes.clone())?;
     let start = tl.text.get(..bytes.start)?.chars().count();
-    Some((start, text.chars().count(), text.to_string()))
+    Some((start, text.chars().count(), text.replace('\u{AD}', "")))
 }
 
 /// The first element whose text contains `needle`, folded so an unaccented
@@ -743,7 +834,8 @@ fn first_with_text(dom: &BaseDocument, folded_needle: &str) -> Option<usize> {
 pub fn char_at(dom: &BaseDocument, id: usize, y: f32) -> Option<usize> {
     let tl = text_layout(dom, id)?;
     let (_, oy) = node_origin(dom, id)?;
-    let local = y - oy;
+    // In the layout's own units, which are device pixels (`layout.scale()`).
+    let local = (y - oy) * tl.layout.scale();
     let line = tl.layout.lines().find(|l| l.metrics().max_coord > local)?;
     let byte = line.text_range().start;
     Some(tl.text.get(..byte)?.chars().count())
@@ -1064,6 +1156,40 @@ mod tests {
 
     /// The Phase 3 milestone: a saved position must survive a font-size change.
     /// A page *number* cannot do this, which is why positions anchor to CFI.
+    #[test]
+    fn spaces_at_element_edges_survive_layout() {
+        let html = r#"<p><span class="a">that the </span><span class="i">entire</span><span class="a"> world is</span></p>"#;
+        let st = ReadingStyle::default();
+        let doc = layout_fragment(&hoist_edge_spaces(html), &st, viewport(760, 1000, 1.0, false));
+        assert_eq!(text_of(&doc, 0), "that the entire world is");
+
+        assert_eq!(hoist_edge_spaces("a<em><b> x</b></em>"), "a <em><b>x</b></em>", "through a run of tags");
+        assert_eq!(hoist_edge_spaces("<i>y </i></b>z"), "<i>y</i></b> z", "and out of nested ones");
+        assert_eq!(hoist_edge_spaces("<pre><code>  x\n </code></pre>"), "<pre><code>  x\n </code></pre>", "pre is left alone");
+        assert_eq!(hoist_edge_spaces("a<br/> b<img src=x> c"), "a<br/> b<img src=x> c", "void tags have no edge");
+    }
+
+    #[test]
+    fn lines_are_measured_in_css_pixels_at_fractional_scale() {
+        // blitz lays parley out at device scale, so a line's metrics are in
+        // device pixels. Taken raw, the tenth line of a paragraph sat two
+        // lines lower than it was painted at 1.25, and page breaks sliced
+        // lines in half (Omarchy at 1.25x).
+        let long = "Un párrafo largo que ocupa muchas líneas en la página. ".repeat(30);
+        let body = format!("<p>{long}</p><p>{long}</p>");
+        let st = ReadingStyle { theme: Theme::White, scale: 1.0, omarchy: None };
+        let doc = layout_fragment(&body, &st, viewport(950, 1250, 1.25, false));
+        let atoms = collect_atoms(&doc);
+        assert!(atoms.len() > 20, "need a long paragraph");
+        for a in &atoms {
+            let (_, y, _, h) = node_rect(&doc, a.group).unwrap();
+            assert!(a.top >= y - 1.0 && a.bottom <= y + h + 1.0, "line {}..{} outside its paragraph {y}..{}", a.top, a.bottom, y + h);
+        }
+        let lines: usize = page_text(&doc, 0.0, f32::MAX).iter().map(|(_, t)| t.len()).sum();
+        let half = page_text(&doc, 0.0, atoms[atoms.len() / 2].top).iter().map(|(_, t)| t.len()).sum::<usize>();
+        assert!(half * 3 > lines && half * 3 < lines * 2, "half the lines hold about half the text: {half} of {lines}");
+    }
+
     #[test]
     fn page_text_is_the_lines_on_that_page() {
         let body: String = std::iter::once("<h2>Uno</h2>".to_string())

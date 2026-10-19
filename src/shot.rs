@@ -33,7 +33,7 @@ pub fn run(args: &[String]) -> i32 {
         eprintln!(
             "usage: omaread --shot <book.epub> <chapter> <page> <out.ppm> [hud] [theme]\n\
              chapter and page are 1-based; page may instead be text to land on;\n\
-             size comes from OMAREAD_SHOT_SIZE=WxH"
+             size comes from OMAREAD_SHOT_SIZE=WxH, font scale from OMAREAD_SHOT_SCALE"
         );
         return 2;
     };
@@ -57,7 +57,9 @@ pub fn run(args: &[String]) -> i32 {
     // Only the Omarchy theme reads the desktop palette, so every other shot is
     // the same on any machine.
     let omarchy = (theme == Theme::Omarchy).then(style::omarchy_chrome).flatten();
-    let style = ReadingStyle { theme, omarchy, ..ReadingStyle::default() };
+    // OMAREAD_SHOT_SCALE is the reader's font size factor, as in settings.txt.
+    let scale = std::env::var("OMAREAD_SHOT_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let style = ReadingStyle { theme, omarchy, scale };
     let margin = PAGE_MARGIN_EM * style.font_px();
     let page_height = (h as f32 - 2.0 * margin).max(1.0);
     let make_viewport = || chapter::viewport(col_w, h, 1.0, style.dark());
@@ -72,7 +74,9 @@ pub fn run(args: &[String]) -> i32 {
 
     let index = chapter_arg.parse::<usize>().unwrap_or(1).saturating_sub(1);
     let cb: SharedCallback<Resource> = Arc::new(Discard);
-    let mut ch = match chapter::load(&book, index, &style, make_viewport(), page_height, None, cb) {
+    // Hyphenated as the window does it: soft hyphens change every line break.
+    let hyph = crate::hyphen::Hyphenator_::for_language(&book.language);
+    let mut ch = match chapter::load(&book, index, &style, make_viewport(), page_height, hyph.as_ref(), cb) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("omaread: {e}");

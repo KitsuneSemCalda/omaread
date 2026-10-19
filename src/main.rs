@@ -1139,7 +1139,8 @@ impl App {
         let (node, x, y) = local;
         let Some(ch) = self.chapter.as_ref() else { return };
         let Some(tl) = chapter::text_layout(ch.dom(), node) else { return };
-        self.sel = Some((node, parley::Selection::from_point(&tl.layout, x, y)));
+        let s = tl.layout.scale();
+        self.sel = Some((node, parley::Selection::from_point(&tl.layout, x * s, y * s)));
         self.dragging = true;
     }
 
@@ -1160,7 +1161,8 @@ impl App {
             return;
         };
         let (fx, fy) = self.pointer_in_flow();
-        let next = sel.extend_to_point(&tl.layout, fx - ox, fy - oy);
+        let s = tl.layout.scale();
+        let next = sel.extend_to_point(&tl.layout, (fx - ox) * s, (fy - oy) * s);
         self.sel = Some((node, next));
         self.request_redraw();
     }

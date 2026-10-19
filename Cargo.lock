@@ -2538,6 +2538,7 @@ dependencies = [
  "rbook",
  "rusqlite",
  "sha2",
+ "skrifa 0.37.0",
  "unic-langid",
  "winit",
 ]

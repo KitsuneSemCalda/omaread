@@ -11,15 +11,24 @@ use crate::paginate::Atom;
 use crate::style::{PAGE_MARGIN_EM, ReadingStyle};
 use blitz_dom::net::Resource;
 use blitz_traits::net::{NetCallback, SharedCallback};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// A page width and height that a real window would plausibly have.
+/// `OMAREAD_CHECK_SIZE=WxH` and `OMAREAD_CHECK_SCALE` (the font size factor)
+/// check another.
 const W: u32 = 760;
 const H: u32 = 1000;
 
-struct Discard;
-impl NetCallback<Resource> for Discard {
-    fn call(&self, _doc_id: usize, _result: Result<Resource, Option<String>>) {}
+/// Figures are loaded, as the window loads them: an image arriving moves every
+/// page break after it, and a check without them checks a different book.
+#[derive(Default)]
+struct Keep(Mutex<Vec<Resource>>);
+impl NetCallback<Resource> for Keep {
+    fn call(&self, _doc_id: usize, result: Result<Resource, Option<String>>) {
+        if let (Ok(r), Ok(mut v)) = (result, self.0.lock()) {
+            v.push(r);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -49,10 +58,16 @@ pub fn run(paths: &[String]) -> i32 {
         return 2;
     }
 
-    let style = ReadingStyle::default();
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    let (w, h) = env("OMAREAD_CHECK_SIZE")
+        .split_once('x')
+        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+        .unwrap_or((W, H));
+    let scale = env("OMAREAD_CHECK_SCALE").parse().unwrap_or(1.0);
+    let style = ReadingStyle { scale, ..ReadingStyle::default() };
     let margin = PAGE_MARGIN_EM * style.font_px();
-    let page_h = (H as f32 - 2.0 * margin).max(1.0);
-    let make_viewport = || chapter::viewport(W, H, 1.0, false);
+    let page_h = (h as f32 - 2.0 * margin).max(1.0);
+    let make_viewport = || chapter::viewport(w, h, 1.0, false);
 
     let mut t = Tally::default();
 
@@ -66,6 +81,8 @@ pub fn run(paths: &[String]) -> i32 {
             }
         };
         t.books += 1;
+        // Hyphenated as the window does it: soft hyphens change every line break.
+        let hyph = crate::hyphen::Hyphenator_::for_language(&book.language);
 
         // The contents fall back to the spine when a book has no usable nav
         // (book::read_toc); that fallback is exactly what this counts.
@@ -77,9 +94,20 @@ pub fn run(paths: &[String]) -> i32 {
         t.toc_entries += book.toc.len();
 
         for i in 0..book.chapter_count() {
-            let cb: SharedCallback<Resource> = Arc::new(Discard);
-            let ch = match chapter::load(&book, i, &style, make_viewport(), page_h, None, cb) {
-                Ok(c) => c,
+            let keep = Arc::new(Keep::default());
+            let cb: SharedCallback<Resource> = keep.clone();
+            let ch = match chapter::load(&book, i, &style, make_viewport(), page_h, hyph.as_ref(), cb) {
+                Ok(c) => {
+                    let mut c = c;
+                    let figures: Vec<Resource> = keep.0.lock().map(|mut v| v.drain(..).collect()).unwrap_or_default();
+                    if !figures.is_empty() {
+                        for r in figures {
+                            c.doc.load_resource(r);
+                        }
+                        chapter::relayout(&mut c, make_viewport(), page_h);
+                    }
+                    c
+                }
                 Err(_) => {
                     t.panicked += 1;
                     eprintln!("PANIC {path} chapter {}", i + 1);

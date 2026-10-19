@@ -62,10 +62,12 @@ pub fn column(
     let w = (width * scale as f32).round() as u32;
     if first {
         blitz_paint::paint_scene(scene, doc, scale, w, height);
+        soft_hyphens(scene, doc, scale, height);
     } else {
         let shift = Affine::translate((x as f64 * scale, 0.0));
         let mut shifted = Compose { inner: scene, shift };
         blitz_paint::paint_scene(&mut shifted, doc, scale, w, height);
+        soft_hyphens(&mut shifted, doc, scale, height);
     }
 
     ground_band(scene, x, width, 0.0, margin, ground, frame);
@@ -142,6 +144,7 @@ pub fn page(
     // NOTE: paint_scene resets the scene, discarding anything drawn before it,
     // so the margin masks must come *after*.
     blitz_paint::paint_scene(scene, doc, scale, width, height);
+    soft_hyphens(scene, doc, scale, height);
 
     // The flow continues above and below this page. Mask it, so the margins
     // show the neighbouring lines' halves as clean paper.
@@ -157,6 +160,104 @@ pub fn page(
     };
     band(0.0, margin as f64 * scale);
     band((margin + extent) as f64 * scale, height as f64);
+}
+
+/// Draw the hyphen at every line that breaks at a soft hyphen.
+///
+/// Parley breaks at U+00AD and draws nothing there — it has no hyphenation —
+/// so a hyphenated word read "Eng / lish". The hyphen is drawn here instead,
+/// after the line's last glyph, in that run's font, size and colour, the way
+/// `blitz_paint` draws the run itself. It hangs past the measure by its own
+/// width: parley justified the line without it and cannot be asked for room.
+///
+/// Before the margin masks, so a hyphen on a neighbouring page is masked with
+/// its line.
+pub fn soft_hyphens(scene: &mut impl PaintScene, doc: &blitz_dom::BaseDocument, scale: f64, height: u32) {
+    use blitz_dom::util::ToColorColor;
+    use parley::PositionedLayoutItem;
+
+    fn walk(
+        scene: &mut impl PaintScene,
+        dom: &blitz_dom::BaseDocument,
+        id: usize,
+        at: (f64, f64),
+        scale: f64,
+        height: f64,
+    ) {
+        let Some(node) = dom.get_node(id) else { return };
+        let l = &node.final_layout;
+        let here = (at.0 + l.location.x as f64, at.1 + l.location.y as f64);
+        let tl = match &node.data {
+            blitz_dom::NodeData::Element(el) => el.inline_layout_data.as_deref(),
+            _ => None,
+        };
+        let on_screen = here.1 * scale < height && (here.1 + l.size.height as f64) * scale > 0.0;
+        if let Some(tl) = tl.filter(|tl| on_screen && tl.text.contains('\u{AD}')) {
+            // The layout's origin is the content box, as in `blitz_paint`.
+            let origin = (
+                here.0 + (l.border.left + l.padding.left) as f64,
+                here.1 + (l.border.top + l.padding.top) as f64,
+            );
+            let transform = Affine::translate((origin.0 * scale, origin.1 * scale));
+            for line in tl.layout.lines() {
+                if !tl.text.get(line.text_range()).is_some_and(|t| t.ends_with('\u{AD}')) {
+                    continue;
+                }
+                let Some(run) = line
+                    .items()
+                    .filter_map(|i| match i {
+                        PositionedLayoutItem::GlyphRun(g) => Some(g),
+                        _ => None,
+                    })
+                    .last()
+                else {
+                    continue;
+                };
+                let font = run.run().font();
+                let Some(glyph) = hyphen_glyph(font) else { continue };
+                let color = dom
+                    .get_node(run.style().brush.id)
+                    .and_then(|n| n.primary_styles())
+                    .map(|s| s.get_inherited_text().color.as_color_color())
+                    .unwrap_or(Color::BLACK);
+                let skew = run
+                    .run()
+                    .synthesis()
+                    .skew()
+                    .map(|a| Affine::skew(a.to_radians().tan() as f64, 0.0));
+                scene.draw_glyphs(
+                    font,
+                    run.run().font_size(),
+                    true,
+                    run.run().normalized_coords(),
+                    Fill::NonZero,
+                    &anyrender::Paint::from(color),
+                    1.0,
+                    transform,
+                    skew,
+                    std::iter::once(Glyph {
+                        id: glyph,
+                        x: run.offset() + run.advance(),
+                        y: run.baseline(),
+                    }),
+                );
+            }
+        }
+        for c in &node.children {
+            walk(scene, dom, *c, here, scale, height);
+        }
+    }
+
+    let scroll = doc.viewport_scroll();
+    walk(scene, doc, 0, (-scroll.x, -scroll.y), scale, height as f64);
+}
+
+/// The font's hyphen: U+2010 where it has one, the hyphen-minus otherwise.
+fn hyphen_glyph(font: &FontData) -> Option<u32> {
+    use skrifa::MetadataProvider;
+    let f = skrifa::FontRef::from_index(font.data.as_ref(), font.index).ok()?;
+    let map = f.charmap();
+    map.map('\u{2010}').or_else(|| map.map('-')).map(|g| g.to_u32())
 }
 
 /// Stroke a rounded outline around a rectangle given in CSS pixels.
