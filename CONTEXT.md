@@ -1145,9 +1145,19 @@ integration degrades to a sensible default elsewhere.
 
 - AUR first; Flatpak at 1.0.
 - Design for the sandbox from day one: XDG base directories everywhere, zero
-  hardcoded paths, file dialogs through `xdg-desktop-portal` (`ashpd`/`rfd`).
+  hardcoded paths, file dialogs through `xdg-desktop-portal`.
   Retrofitting this is miserable, and it is the same discipline that makes watched
   folders behave correctly under a sandbox.
+- **File dialogs are the portal's `FileChooser`, called over zbus** (`src/portal.rs`),
+  not `ashpd` or `rfd`: zbus is already in the tree for AccessKit, and those
+  crates bring an async runtime to wrap one method call and one signal. The
+  dialog runs on its own thread and its answer is picked up in `about_to_wait`,
+  like the page counts. "Add a folder…" opens the folder picker; "Open a book…"
+  in the same panel, and F3 in the library, open any single file, which is
+  imported like a book given on the command line. With no portal to ask, the
+  panel falls back to typing the folder's path. Dropping a book or a folder on
+  the window works on X11/XWayland only: **winit 0.30 has no drag and drop on
+  Wayland**, so on Omarchy it does nothing until winit grows it.
 - UI in English and Spanish, through `fluent-bundle`. Every user-facing string is
   a message in `assets/i18n/<lang>.ftl`, looked up with `tr!` (`src/i18n.rs`);
   nothing user-facing is inlined. The language is the POSIX locale's (`LC_ALL`,
@@ -1284,8 +1294,18 @@ remaining ~140ms down again; noted at `net::CoverProvider`.
 Because there are no public releases before 1.0, no stranger's broken EPUB will
 be seen for a long time. The substitute:
 
-- **Conformance corpus in CI** — epubtest.org, the W3C EPUB test suite, Calibre's
-  pathological samples.
+- **Conformance corpus in CI** (`.github/workflows/ci.yml`, `ci/corpus.sh`) —
+  the W3C EPUB test suite (211 books, packed from the repo at a pinned commit),
+  epubtest.org's eight released books, and Calibre's own quick-start and MathJax
+  EPUBs, all through `--check`. A panic, a cut line, a stall or a book that will
+  not open fails the run. Calibre has no pathological-sample corpus to fetch: its
+  tests build their books in code. No AZW3/MOBI in it yet: nothing publishes a
+  freely redistributable set, and generating one needs Calibre in CI.
+  The first run found that a spine item need not be XHTML: an image in the
+  spine, or something else with a `fallback` chain (EPUB 3.3 §3.4.4). Both
+  failed to load; `Book::open` now follows the chain to XHTML or an image, and
+  an image becomes a page of its own. What is left unreadable — the suite's DMG
+  with a PSD fallback — is counted, not failed.
 - **Headless smoke run over all 372 local books** via `omaread --check`: assert no
   engine panic, no page break cutting an atom, no pagination stall, non-empty
   text per chapter. The first sweep found three real breaks that cut a line —

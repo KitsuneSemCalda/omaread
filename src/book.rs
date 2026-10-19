@@ -94,6 +94,18 @@ impl Book {
             .spine()
             .iter()
             .filter_map(|entry| entry.manifest_entry())
+            // A spine item need not be XHTML: it may be an image, or something
+            // else with a `fallback` chain that leads to one (EPUB 3.3 §3.4.4).
+            // Read the first link of the chain this can show.
+            .map(|entry| {
+                std::iter::once(entry)
+                    .chain(entry.fallbacks())
+                    .find(|e| {
+                        matches!(e.media_type(), "application/xhtml+xml" | "text/html")
+                            || is_image(e.href().as_str())
+                    })
+                    .unwrap_or(entry)
+            })
             .map(|entry| entry.href().as_str().to_string())
             .collect();
 
@@ -220,6 +232,11 @@ impl Book {
             .chapter_href(index)
             .ok_or_else(|| format!("no spine item {index}"))?
             .to_owned();
+        // An image in the spine is a page of its own: give it one to sit on.
+        if is_image(&href) {
+            let name = href.rsplit('/').next().unwrap_or_default();
+            return Ok(format!(r#"<html><body><img src="{name}" alt=""/></body></html>"#));
+        }
         self.read_str(&href)
     }
 
@@ -243,6 +260,11 @@ impl Book {
             Source::Mobi(files) => files.get(href).cloned().ok_or_else(|| format!("read {href}: not found")),
         }
     }
+}
+
+/// The raster formats `image` is built with (Cargo.toml).
+fn is_image(href: &str) -> bool {
+    crate::library::has_ext(Path::new(href), &["png", "jpg", "jpeg", "gif", "webp"])
 }
 
 fn stem(path: &Path) -> String {

@@ -38,6 +38,9 @@ struct Tally {
     pages: usize,
     empty: usize,
     panicked: usize,
+    /// Spine items with nothing to show: neither XHTML nor an image, with no
+    /// fallback to one (a DMG, in the W3C suite). Reported, not failed.
+    unreadable: usize,
     cutting: usize,
     /// Cuts through an atom that is itself taller than a page. Unavoidable: a
     /// table row 1338px tall cannot fit a 900px page whatever the paginator
@@ -107,6 +110,11 @@ pub fn run(paths: &[String]) -> i32 {
                         chapter::relayout(&mut c, make_viewport(), page_h);
                     }
                     c
+                }
+                Err(e) if book.chapter_html(i).is_err() => {
+                    t.unreadable += 1;
+                    eprintln!("SKIP {path} chapter {}: {e}", i + 1);
+                    continue;
                 }
                 Err(_) => {
                     t.panicked += 1;
@@ -189,15 +197,16 @@ pub fn run(paths: &[String]) -> i32 {
     }
 
     println!(
-        "checked {} books, {} chapters, {} pages | empty {} | engine panics {} | breaks cutting an atom {} | stalls {} | unavoidable cuts through an over-tall atom {}",
-        t.books, t.chapters, t.pages, t.empty, t.panicked, t.cutting, t.stalled, t.oversized
+        "checked {} books, {} chapters, {} pages | empty {} | unreadable {} | engine panics {} | breaks cutting an atom {} | stalls {} | unavoidable cuts through an over-tall atom {}",
+        t.books, t.chapters, t.pages, t.empty, t.unreadable, t.panicked, t.cutting, t.stalled, t.oversized
     );
     println!(
         "contents: {} entries | books falling back to the spine {} | dangling fragments {}",
         t.toc_entries, t.no_toc, t.dangling
     );
 
-    let bad = t.cutting + t.stalled + t.failed_books.len();
+    // A panic is a release blocker (CONTEXT.md §13), so it fails the run too.
+    let bad = t.panicked + t.cutting + t.stalled + t.failed_books.len();
     if bad > 0 { 1 } else { 0 }
 }
 

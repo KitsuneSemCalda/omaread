@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # fontconfig is linked, not loaded at runtime (yeslogic-fontconfig-sys);
+      # Wayland and xkbcommon are dlopened, but only if they are there.
+      - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libwayland-dev libxkbcommon-dev fonts-dejavu-core zip
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Release, as everywhere else: a debug Stylo is too slow to sweep a corpus.
+      - run: cargo test --release
+      - run: cargo build --release
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/omaread-corpus
+          key: corpus-${{ hashFiles('ci/corpus.sh') }}
+      # CONTEXT.md §13: a panic, a break through a line, or a stall fails the run.
+      - run: ci/corpus.sh target/release/omaread

@@ -98,7 +98,7 @@ pub fn books_under(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn has_ext(path: &Path, exts: &[&str]) -> bool {
+pub fn has_ext(path: &Path, exts: &[&str]) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))

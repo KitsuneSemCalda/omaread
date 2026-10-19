@@ -17,6 +17,7 @@ mod library;
 mod mobi;
 mod paginate;
 mod paint;
+mod portal;
 mod search;
 mod shot;
 mod style;
@@ -491,7 +492,7 @@ fn main() {
              omaread --shot <book.epub> <chapter> <page> <out.ppm> [hud]\n\
              omaread --index                 index every library book for search\n\n\
              Library:  type to search · #tag to filter · F2 tag a book\n\
-                       Enter open · Tab sort · F5 rescan · Esc clear/quit\n\
+                       Enter open · F3 open a file · Tab sort · F5 rescan · Esc clear/quit\n\
              Reading:  ←/→ page · ↑/↓ chapter · Tab contents · / search · t theme · +/- size · c columns · l library · q quit\n\
                        move the mouse for the menus: marks, contents, size, columns\n\
              Contents: ↑/↓ select · Enter go · Tab or Esc back\n\
@@ -629,6 +630,9 @@ struct App {
     /// Page counts being measured off the window's thread: for which book, at
     /// which layout, and where the answer will arrive.
     measuring: Option<(String, String, Receiver<Vec<usize>>)>,
+    /// The portal's file dialog, open off the window's thread: whether it is
+    /// picking a folder, and where the answer will arrive.
+    picking: Option<(bool, Receiver<Result<Option<PathBuf>, String>>)>,
     /// In-book search: the query, and whether the contents view is showing hits
     /// instead of navigation. Both lists are "places in this book", so they are
     /// the same view.
@@ -738,6 +742,7 @@ impl App {
             chapter_pages: None,
             pages_layout: String::new(),
             measuring: None,
+            picking: None,
             find: String::new(),
             toc_mode: TocMode::Contents,
             marks: Vec::new(),
@@ -1543,7 +1548,13 @@ impl App {
                     eprintln!("omaread: {e}");
                 }
             }
-            _ if what == "add" => self.adding_folder = Some(String::new()),
+            _ if what == "add" => self.pick(true),
+            _ if what == "open" => {
+                self.menu = None;
+                self.pick(false);
+                self.request_redraw();
+                return true;
+            }
             _ => {}
         }
         self.build_menu();
@@ -1585,24 +1596,79 @@ impl App {
         self.request_redraw();
     }
 
-    /// Add whatever folder was typed, and pick up what is in it.
+    /// Add whatever folder was typed.
     fn add_folder(&mut self) {
         let Some(typed) = self.adding_folder.take() else { return };
-        let dir = library::expand_home(typed.trim());
+        self.add_dir(library::expand_home(typed.trim()));
+    }
+
+    /// Scan another folder, and pick up what is in it.
+    fn add_dir(&mut self, dir: PathBuf) {
         if !dir.is_dir() {
             eprintln!("omaread: {} is not a folder", dir.display());
+        } else {
+            let mut dirs = library::folders();
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+            if let Err(e) = library::set_folders(&dirs) {
+                eprintln!("omaread: {e}");
+            }
+            self.rescan();
+        }
+        if self.menu.is_some() {
             self.build_menu();
+        }
+    }
+
+    /// Open a book from anywhere on disk: picked, or dropped on the window.
+    fn open_file(&mut self, path: &Path) {
+        self.save_position();
+        self.menu = None;
+        self.open_path(path, 0);
+    }
+
+    /// Ask the desktop for a book to open, or a folder to scan. Off the
+    /// window's thread: the dialog stays up for as long as the reader likes.
+    fn pick(&mut self, folder: bool) {
+        if self.picking.is_some() {
             return;
         }
-        let mut dirs = library::folders();
-        if !dirs.contains(&dir) {
-            dirs.push(dir);
+        let title = i18n::tr!(if folder { "picker-folder" } else { "picker-book" });
+        let (tx, rx) = channel();
+        let window = self.window.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(portal::pick(folder, &title));
+            if let Some(w) = window {
+                w.request_redraw();
+            }
+        });
+        self.picking = Some((folder, rx));
+    }
+
+    /// Act on what `pick` brought back. With no portal to ask, a folder can
+    /// still be typed into the panel.
+    fn take_picked(&mut self) {
+        let Some((folder, rx)) = &self.picking else { return };
+        let folder = *folder;
+        let got = match rx.try_recv() {
+            Ok(got) => got,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("file portal: no answer".into()),
+        };
+        self.picking = None;
+        match got {
+            Ok(Some(dir)) if folder => self.add_dir(dir),
+            Ok(Some(book)) => self.open_file(&book),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("omaread: {e}");
+                if folder && self.menu.is_some() {
+                    self.adding_folder = Some(String::new());
+                    self.build_menu();
+                }
+            }
         }
-        if let Err(e) = library::set_folders(&dirs) {
-            eprintln!("omaread: {e}");
-        }
-        self.rescan();
-        self.build_menu();
     }
 
     /// Follow whatever `<a>` is under the pointer. Returns true when it dealt
@@ -1752,6 +1818,7 @@ impl App {
                 ("PgUp PgDn", tr!("help-page")),
                 ("Tab", tr!("help-sort")),
                 ("F2", tr!("help-tag")),
+                ("F3", tr!("help-open-file")),
                 ("F5", tr!("help-rescan")),
                 ("F10", tr!("help-settings")),
             ],
@@ -3352,6 +3419,7 @@ impl App {
                 self.reload_rows();
             }
             Key::Named(NamedKey::F5) => self.rescan(),
+            Key::Named(NamedKey::F3) => return self.pick(false),
             // The menu key, or F10 where there is none: the panel the cog
             // opens, so it is reachable without a mouse.
             Key::Named(NamedKey::F10 | NamedKey::ContextMenu) => {
@@ -3863,6 +3931,10 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
                 }
             }
 
+            // X11 and XWayland only: winit 0.30 has no drag and drop on Wayland.
+            WindowEvent::DroppedFile(path) if path.is_dir() => self.add_dir(path),
+            WindowEvent::DroppedFile(path) if library::is_book(&path) => self.open_file(&path),
+
             WindowEvent::CloseRequested => {
                 self.save_position();
                 event_loop.exit();
@@ -4032,6 +4104,7 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.drain_resources();
         self.take_measured();
+        self.take_picked();
         let now = Instant::now();
 
         if self.exit_at.is_some_and(|at| now >= at) {

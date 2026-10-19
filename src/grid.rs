@@ -265,11 +265,13 @@ pub fn menu_html(theme: &str, omarchy: bool, folders: &[String], adding: Option<
   <div class="head">{folders_head}</div>
   {dirs}
   {add}
+  <div class="row" data-set="open" data-label="{open}"><span class="tick">↗</span>{open}</div>
   <div class="foot">{help}</div>
 </div></body></html>"#,
         theme_head = tr!("settings-theme"),
         folders_head = tr!("settings-folders"),
         help = tr!("settings-help"),
+        open = tr!("settings-open-book"),
     )
 }
 
