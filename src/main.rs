@@ -12,6 +12,7 @@ mod grid;
 mod hud;
 mod hyphen;
 mod library;
+mod mobi;
 mod paginate;
 mod paint;
 mod search;

@@ -13,8 +13,8 @@ here first.
 
 ## 1. What Omaread is
 
-- **EPUB only.** AZW3 and MOBI are converted to EPUB at import. PDF is explicitly
-  out of scope — zathura exists and is good.
+- **EPUB, AZW3, MOBI.** The Kindle formats are read in place, never converted
+  (§4). PDF is explicitly out of scope — zathura exists and is good.
 - **Pure Rust, no webview.** No WebKitGTK, no Servo embedding, no Electron.
 - **Wayland-native**, rendered on the CPU (vello_cpu → softbuffer). No GPU stack.
 - **Hermetic.** The application never makes a network request.
@@ -28,7 +28,7 @@ compatibility obligations until 1.0.
 
 | Layer | Choice |
 |---|---|
-| Container parsing | `rbook` |
+| Container parsing | `rbook` (EPUB), `src/mobi.rs` (AZW3/MOBI, no crate) |
 | HTML parsing | `blitz-html` (`HtmlDocument::from_html`) |
 | DOM + CSS + layout | `blitz-dom` (Stylo + Taffy + Parley) |
 | Text shaping | `parley` (pinned at 0.6.0 by blitz-dom) |
@@ -207,10 +207,19 @@ us while blitz-dom is pre-1.0.
 - **Watched folders are read-only.** Omaread never renames or moves a file it does
   not own.
 - Books deleted on disk keep **ghost rows**, preserving reading progress.
-- AZW3/MOBI are converted to EPUB **at import**. The converted EPUB lives in the
-  managed library and is what highlights anchor into. The reader core is
-  single-format forever; adding a format means writing a converter, not auditing
-  every subsystem.
+- AZW3/MOBI are **read in place, not converted**. They are the same container —
+  a PalmDB of PalmDoc- or HUFF/CDIC-compressed text records plus image records —
+  so `src/mobi.rs` decodes the whole file at open into XHTML parts
+  (`/part0000.html`…) and images (`/res/00001`…) behind `Book`. KF8 (AZW3) parts
+  are skeletons with their fragments spliced back in; MOBI 6 is cut at
+  `<mbp:pagebreak>`, with an anchor dropped at every `filepos` target. The reader
+  core still sees one format: the split is at `Book`, and nothing above it knows.
+  The managed copy keeps its own extension, and the CFI spine step is the part
+  index. DRM-protected files are refused at open.
+- The `mobi` crate was looked at and rejected: it strips trailing record entries
+  as two bytes per flag (they are backwards varints) and does not reassemble KF8
+  skeletons — the two things that matter. A hybrid `.mobi` (MOBI 6 + KF8) is
+  read through its MOBI 6 half.
 - Config in `~/.config/omaread/`. Cache: nowhere.
 - Watched folders live in `~/.config/omaread/folders.txt`, one path per line,
   seeded with `~/Documents` and `~/Downloads` on first run. A newline list rather
@@ -694,8 +703,12 @@ it away.
 
 **The bottom bar opens with a Library button**, back arrow first, then the title.
 
-Next: AZW3/MOBI import and AccessKit — the last two items of §7. MOBI is the only
-one needing a converter, so it is the odd one out and probably last.
+**AZW3/MOBI are read natively** (§4). All seven Kindle files in `~/Downloads`
+pass `--check` — KF8 and MOBI 6, uncompressed, PalmDoc and HUFF/CDIC — with no
+dangling contents fragments. MOBI 6 markup is tag soup, so html5ever logs parse
+errors for it; they are noise.
+
+Next: AccessKit — the last item of §7.
 
 ## 9. Spike findings (verified, not assumed)
 

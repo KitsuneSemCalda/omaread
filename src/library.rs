@@ -78,11 +78,11 @@ pub fn expand_home(s: &str) -> PathBuf {
     }
 }
 
-/// Every `.epub` under `dir`, recursively.
+/// Every book under `dir`, recursively.
 ///
 /// ponytail: `std::fs` recursion rather than a walkdir dependency. Symlinked
 /// directories are not followed, which also stops a cycle wedging the scan.
-pub fn epubs_under(dir: &Path, out: &mut Vec<PathBuf>) {
+pub fn books_under(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -91,17 +91,26 @@ pub fn epubs_under(dir: &Path, out: &mut Vec<PathBuf>) {
             continue;
         }
         if ft.is_dir() {
-            epubs_under(&path, out);
-        } else if is_epub(&path) {
+            books_under(&path, out);
+        } else if is_book(&path) {
             out.push(path);
         }
     }
 }
 
-pub fn is_epub(path: &Path) -> bool {
+fn has_ext(path: &Path, exts: &[&str]) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("epub"))
+        .is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+pub fn is_book(path: &Path) -> bool {
+    has_ext(path, &["epub", "azw3", "mobi", "azw"])
+}
+
+/// AZW3/MOBI, read through `mobi.rs` rather than rbook.
+pub fn is_mobi(path: &Path) -> bool {
+    has_ext(path, &["azw3", "mobi", "azw"])
 }
 
 /// Widest a stored cover needs to be: twice the 225px card, so a HiDPI screen
@@ -133,31 +142,31 @@ pub fn shrink_cover(bytes: Vec<u8>) -> Vec<u8> {
 
 /// Read title, author and cover out of a book.
 pub fn describe(path: &Path, hash: String) -> Result<BookRow, String> {
-    let epub = Epub::open(path).map_err(|e| format!("open: {e}"))?;
-
-    let title = epub
-        .metadata()
-        .title()
-        .map(|t| t.value().to_string())
-        .filter(|t| !t.trim().is_empty())
-        .unwrap_or_else(|| {
-            path.file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Untitled".into())
-        });
-
-    let author = epub
-        .metadata()
-        .creators()
-        .next()
-        .map(|c| c.value().to_string())
-        .unwrap_or_default();
-
-    let cover = epub
-        .manifest()
-        .cover_image()
-        .and_then(|entry| epub.read_resource_bytes(entry.href()).ok())
-        .map(shrink_cover);
+    let (title, author, cover) = if is_mobi(path) {
+        let mut m = crate::mobi::open(path).map_err(|e| format!("open: {e}"))?;
+        let cover = m.cover.and_then(|h| m.files.remove(&h));
+        (Some(m.title), m.author, cover)
+    } else {
+        let epub = Epub::open(path).map_err(|e| format!("open: {e}"))?;
+        let title = epub.metadata().title().map(|t| t.value().to_string());
+        let author = epub
+            .metadata()
+            .creators()
+            .next()
+            .map(|c| c.value().to_string())
+            .unwrap_or_default();
+        let cover = epub
+            .manifest()
+            .cover_image()
+            .and_then(|entry| epub.read_resource_bytes(entry.href()).ok());
+        (title, author, cover)
+    };
+    let title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled".into())
+    });
+    let cover = cover.map(shrink_cover);
 
     Ok(BookRow {
         hash,
@@ -181,9 +190,9 @@ pub fn describe(path: &Path, hash: String) -> Result<BookRow, String> {
 pub fn scan(db: &Db) -> (usize, usize) {
     let mut paths = Vec::new();
     for dir in folders() {
-        epubs_under(&dir, &mut paths);
+        books_under(&dir, &mut paths);
     }
-    epubs_under(&library_dir(), &mut paths);
+    books_under(&library_dir(), &mut paths);
 
     let mut added = 0;
     for path in &paths {
@@ -258,7 +267,8 @@ pub fn import(db: &Db, path: &Path) -> PathBuf {
         return path.to_path_buf();
     }
 
-    let dest = dir.join(canonical_name(&row.author, &row.title));
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("epub").to_ascii_lowercase();
+    let dest = dir.join(canonical_name(&row.author, &row.title, &ext));
     if dest != path && !dest.exists() && std::fs::copy(path, &dest).is_err() {
         let _ = db.upsert_book(&row);
         return path.to_path_buf();
@@ -271,8 +281,8 @@ pub fn import(db: &Db, path: &Path) -> PathBuf {
     dest
 }
 
-/// `Author - Title.epub`, with anything a filesystem dislikes removed.
-pub fn canonical_name(author: &str, title: &str) -> String {
+/// `Author - Title.ext`, with anything a filesystem dislikes removed.
+pub fn canonical_name(author: &str, title: &str, ext: &str) -> String {
     let author = sanitize(author);
     let title = sanitize(title);
     let stem = match (author.is_empty(), title.is_empty()) {
@@ -282,7 +292,7 @@ pub fn canonical_name(author: &str, title: &str) -> String {
     };
     // Leave room for the extension inside common filename limits.
     let stem: String = stem.chars().take(180).collect();
-    format!("{}.epub", stem.trim_end_matches([' ', '.']))
+    format!("{}.{ext}", stem.trim_end_matches([' ', '.']))
 }
 
 fn sanitize(s: &str) -> String {
@@ -304,30 +314,32 @@ mod tests {
 
     #[test]
     fn canonical_names_are_filesystem_safe() {
-        assert_eq!(canonical_name("Postman, Neil", "Divertirse hasta morir"),
+        assert_eq!(canonical_name("Postman, Neil", "Divertirse hasta morir", "epub"),
                    "Postman, Neil - Divertirse hasta morir.epub");
-        assert_eq!(canonical_name("", "Solo"), "Solo.epub");
-        assert_eq!(canonical_name("A", ""), "Untitled.epub");
+        assert_eq!(canonical_name("", "Solo", "epub"), "Solo.epub");
+        assert_eq!(canonical_name("A", "", "azw3"), "Untitled.azw3");
         // Separators and control characters must never survive.
-        let n = canonical_name("a/b\\c", "d:e*f?\"g<h>i|j");
+        let n = canonical_name("a/b\\c", "d:e*f?\"g<h>i|j", "epub");
         assert!(!n.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']), "{n}");
         // Runs of whitespace collapse rather than leaving a ragged name.
-        assert_eq!(canonical_name("  A   B ", " T   U "), "A B - T U.epub");
+        assert_eq!(canonical_name("  A   B ", " T   U ", "epub"), "A B - T U.epub");
     }
 
     #[test]
     fn long_names_stay_within_filesystem_limits() {
-        let n = canonical_name(&"a".repeat(300), &"b".repeat(300));
+        let n = canonical_name(&"a".repeat(300), &"b".repeat(300), "epub");
         assert!(n.len() <= 190, "name too long: {}", n.len());
         assert!(n.ends_with(".epub"));
     }
 
     #[test]
-    fn only_epubs_are_picked_up() {
-        assert!(is_epub(Path::new("/x/a.epub")));
-        assert!(is_epub(Path::new("/x/a.EPUB")));
-        assert!(!is_epub(Path::new("/x/a.pdf")));
-        assert!(!is_epub(Path::new("/x/epub")));
+    fn only_books_are_picked_up() {
+        assert!(is_book(Path::new("/x/a.epub")));
+        assert!(is_book(Path::new("/x/a.EPUB")));
+        assert!(is_book(Path::new("/x/a.azw3")) && is_mobi(Path::new("/x/a.azw3")));
+        assert!(is_mobi(Path::new("/x/a.MOBI")) && !is_mobi(Path::new("/x/a.epub")));
+        assert!(!is_book(Path::new("/x/a.pdf")));
+        assert!(!is_book(Path::new("/x/epub")));
     }
 
     #[test]
@@ -340,7 +352,7 @@ mod tests {
         std::fs::write(nested.join("skip.pdf"), b"x").unwrap();
 
         let mut found = Vec::new();
-        epubs_under(&dir, &mut found);
+        books_under(&dir, &mut found);
         assert_eq!(found.len(), 2, "{found:?}");
 
         std::fs::remove_dir_all(&dir).ok();

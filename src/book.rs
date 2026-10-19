@@ -1,6 +1,11 @@
-//! EPUB container access. Everything that reads from the .epub goes through here.
+//! Container access. Everything that reads from a book file goes through here.
+//!
+//! An EPUB is read from its zip; an AZW3 or MOBI is decoded whole at open by
+//! `mobi.rs` into the same href space, so nothing above this module knows which
+//! one it has.
 
 use rbook::Epub;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -24,6 +29,12 @@ pub struct TocEntry {
     pub cfi: Option<String>,
 }
 
+enum Source {
+    Epub(Mutex<Epub>),
+    /// Every file an AZW3/MOBI yields, by href.
+    Mobi(HashMap<String, Vec<u8>>),
+}
+
 /// An open book. Cheap to clone; the archive is shared.
 ///
 /// Note on the href space: rbook yields absolute, slash-prefixed archive paths
@@ -33,7 +44,7 @@ pub struct TocEntry {
 /// end to end.
 #[derive(Clone)]
 pub struct Book {
-    inner: Arc<Mutex<Epub>>,
+    inner: Arc<Source>,
     /// Spine hrefs, in reading order, relative to the archive root.
     spine: Arc<Vec<String>>,
     pub title: String,
@@ -50,18 +61,17 @@ pub struct Book {
 
 impl Book {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
-        let epub = Epub::open(path.as_ref()).map_err(|e| format!("open epub: {e}"))?;
+        let path = path.as_ref();
+        if crate::library::is_mobi(path) {
+            return Self::open_mobi(path);
+        }
+        let epub = Epub::open(path).map_err(|e| format!("open epub: {e}"))?;
 
         let title = epub
             .metadata()
             .title()
             .map(|t| t.value().to_string())
-            .unwrap_or_else(|| {
-                path.as_ref()
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Untitled".into())
-            });
+            .unwrap_or_else(|| stem(path));
 
         let author = epub
             .metadata()
@@ -88,29 +98,70 @@ impl Book {
         }
 
         let toc = read_toc(&epub, &spine);
+        Ok(Self::assemble(Source::Epub(Mutex::new(epub)), spine, title, author, language, toc))
+    }
+
+    fn open_mobi(path: &Path) -> Result<Self, String> {
+        let m = crate::mobi::open(path)?;
+        if m.spine.is_empty() {
+            return Err("book has no text".into());
+        }
+        let toc = m
+            .toc
+            .iter()
+            .filter_map(|(label, depth, href)| {
+                let (file, fragment) = match href.split_once('#') {
+                    Some((f, frag)) => (f, Some(frag.to_string())),
+                    None => (href.as_str(), None),
+                };
+                Some(TocEntry {
+                    label: label.split_whitespace().collect::<Vec<_>>().join(" "),
+                    depth: *depth,
+                    spine: m.spine.iter().position(|s| s == file)?,
+                    fragment,
+                    find: None,
+                    cfi: None,
+                })
+            })
+            .filter(|e| !e.label.is_empty())
+            .collect();
+        let title = Some(m.title).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| stem(path));
+        let toc = finish_toc(toc, m.spine.len());
+        Ok(Self::assemble(Source::Mobi(m.files), m.spine, title, m.author, m.language, toc))
+    }
+
+    fn assemble(
+        source: Source,
+        spine: Vec<String>,
+        title: String,
+        author: String,
+        language: String,
+        toc: Vec<TocEntry>,
+    ) -> Self {
+        let mut book = Self {
+            inner: Arc::new(source),
+            spine: Arc::new(spine),
+            title,
+            author,
+            language,
+            toc: Arc::new(toc),
+            offsets: Arc::new(Vec::new()),
+        };
 
         // Reading progress is weighted by the size of each spine item. Counting
         // spine items instead would call a two-page foreword and a sixty-page
         // chapter the same fraction of a book. The bytes are the markup, not the
         // prose, but they track it closely enough for a percentage and they cost
         // one pass over the (already decompressed) text at open.
-        let mut offsets = Vec::with_capacity(spine.len() + 1);
+        let mut offsets = Vec::with_capacity(book.spine.len() + 1);
         let mut running = 0usize;
-        for href in &spine {
+        for href in book.spine.iter() {
             offsets.push(running);
-            running += epub.read_resource_bytes(href.as_str()).map_or(0, |b| b.len());
+            running += book.read_bytes(href).map_or(0, |b| b.len());
         }
         offsets.push(running);
-
-        Ok(Self {
-            inner: Arc::new(Mutex::new(epub)),
-            spine: Arc::new(spine),
-            title,
-            author,
-            language,
-            toc: Arc::new(toc),
-            offsets: Arc::new(offsets),
-        })
+        book.offsets = Arc::new(offsets);
+        book
     }
 
     pub fn chapter_count(&self) -> usize {
@@ -160,16 +211,31 @@ impl Book {
     }
 
     pub fn read_str(&self, href: &str) -> Result<String, String> {
-        let epub = self.inner.lock().map_err(|_| "book lock poisoned")?;
-        epub.read_resource_str(href)
-            .map_err(|e| format!("read {href}: {e}"))
+        match &*self.inner {
+            Source::Epub(epub) => {
+                let epub = epub.lock().map_err(|_| "book lock poisoned")?;
+                epub.read_resource_str(href).map_err(|e| format!("read {href}: {e}"))
+            }
+            Source::Mobi(_) => String::from_utf8(self.read_bytes(href)?)
+                .map_err(|e| format!("read {href}: {e}")),
+        }
     }
 
     pub fn read_bytes(&self, href: &str) -> Result<Vec<u8>, String> {
-        let epub = self.inner.lock().map_err(|_| "book lock poisoned")?;
-        epub.read_resource_bytes(href)
-            .map_err(|e| format!("read {href}: {e}"))
+        match &*self.inner {
+            Source::Epub(epub) => {
+                let epub = epub.lock().map_err(|_| "book lock poisoned")?;
+                epub.read_resource_bytes(href).map_err(|e| format!("read {href}: {e}"))
+            }
+            Source::Mobi(files) => files.get(href).cloned().ok_or_else(|| format!("read {href}: not found")),
+        }
     }
+}
+
+fn stem(path: &Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Untitled".into())
 }
 
 /// Flatten the EPUB 3 `nav` (or the EPUB 2 NCX — rbook falls back on its own)
@@ -211,6 +277,11 @@ fn read_toc(epub: &Epub, spine: &[String]) -> Vec<TocEntry> {
         }
     }
 
+    finish_toc(out, spine.len())
+}
+
+/// Rebase depths and fall back to the spine when there is no navigation.
+fn finish_toc(mut out: Vec<TocEntry>, spine_len: usize) -> Vec<TocEntry> {
     // rbook counts depth from the nav root, so the top level is 1 in some books
     // and deeper in others. Indentation is relative; rebase it on the shallowest
     // entry present.
@@ -221,7 +292,7 @@ fn read_toc(epub: &Epub, spine: &[String]) -> Vec<TocEntry> {
     }
 
     if out.is_empty() {
-        out = (0..spine.len())
+        out = (0..spine_len)
             .map(|i| TocEntry {
                 label: format!("Chapter {}", i + 1),
                 depth: 0,

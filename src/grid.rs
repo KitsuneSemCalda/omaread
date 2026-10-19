@@ -65,7 +65,7 @@ pub fn html(
     };
 
     let body = if rows.is_empty() {
-        r#"<div class="empty">Nothing here yet. Put some .epub files in a watched
+        r#"<div class="empty">Nothing here yet. Put some .epub, .azw3 or .mobi files in a watched
            folder and press r to rescan.</div>"#
             .to_string()
     } else {
