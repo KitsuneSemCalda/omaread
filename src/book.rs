@@ -209,6 +209,24 @@ impl Book {
         ((start + (end - start) * within.clamp(0.0, 1.0)) / total).clamp(0.0, 1.0)
     }
 
+    /// The inverse of `progress`: the spine item a fraction of the book falls
+    /// in, and how far through that item it is.
+    pub fn locate(&self, fraction: f32) -> (usize, f32) {
+        let f = fraction.clamp(0.0, 1.0);
+        let n = self.spine.len().max(1);
+        let total = self.offsets.last().copied().unwrap_or(0) as f32;
+        if total <= 0.0 {
+            // As `progress` does: count spine items.
+            let at = f * n as f32;
+            let spine = (at as usize).min(n - 1);
+            return (spine, (at - spine as f32).min(1.0));
+        }
+        let at = f * total;
+        let spine = self.offsets[1..].iter().position(|&end| end as f32 > at).unwrap_or(n - 1);
+        let (s, e) = (self.offsets[spine] as f32, self.offsets[spine + 1] as f32);
+        (spine, if e > s { ((at - s) / (e - s)).clamp(0.0, 1.0) } else { 0.0 })
+    }
+
     /// Href of the nth spine item, archive-root-relative.
     pub fn chapter_href(&self, index: usize) -> Option<&str> {
         self.spine.get(index).map(String::as_str)
@@ -329,3 +347,31 @@ fn finish_toc(mut out: Vec<TocEntry>, spine_len: usize) -> Vec<TocEntry> {
     out
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `locate` is how the go-to bar turns a percentage into a place, so it
+    /// has to land where `progress` would say that place is.
+    #[test]
+    fn locate_inverts_progress() {
+        let book = Book {
+            inner: Arc::new(Source::Mobi(HashMap::new())),
+            spine: Arc::new(vec!["a".into(), "b".into(), "c".into()]),
+            title: String::new(),
+            author: String::new(),
+            language: String::new(),
+            fixed_layout: false,
+            toc: Arc::new(Vec::new()),
+            offsets: Arc::new(vec![0, 100, 400, 500]),
+        };
+        for (spine, within) in [(0, 0.0), (0, 0.5), (1, 0.0), (1, 0.25), (2, 0.9)] {
+            let (s, w) = book.locate(book.progress(spine, within));
+            assert_eq!(s, spine, "{spine} {within}");
+            assert!((w - within).abs() < 1e-4, "{spine} {within} -> {w}");
+        }
+        assert_eq!(book.locate(1.0), (2, 1.0));
+        assert_eq!(book.locate(-3.0), (0, 0.0));
+    }
+}

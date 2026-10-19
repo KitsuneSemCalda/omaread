@@ -28,6 +28,9 @@ pub fn html(
     back: Option<&str>,
     // This page carries a bookmark: the button says so, in the accent.
     bookmarked: bool,
+    // The go-to bar (`g`): where it points, 0.0..=1.0, and what is there,
+    // already worded. It takes the bottom bar's place while it is open.
+    scrub: Option<(f32, &str)>,
 ) -> String {
     // Top bar occupies [INSET, INSET + BAR]; this drops the bottom one to
     // [H - INSET - BAR, H - INSET].
@@ -57,21 +60,34 @@ pub fn html(
   <span class="btn" data-hud="columns">{columns}</span>
 </div>
 <div class="hud" style="margin-top: {push}px">
-  <span class="btn" data-hud="library"><span class="ico" data-icon="back"></span><span class="lbl">{library}</span></span>
-  <span class="title">{title}</span>
-  {back}<span class="btn" data-hud="readout">{readout}</span>
+  {foot}
 </div>
 </body></html>"#,
-        title = escape(title),
-        readout = escape(readout),
         contents = tr!("hud-contents"),
         columns = tr!("hud-columns", n = columns),
-        library = tr!("hud-library"),
-        back = match back {
-            Some(label) => {
-                format!(r#"<span class="btn" data-hud="back">{}</span>"#, escape(label))
-            }
-            None => String::new(),
+        foot = match scrub {
+            // A rail with the part behind the thumb filled in. The track is
+            // what the window hit-tests, so it is tall even though the rail is not.
+            Some((at, label)) => format!(
+                r#"<span class="track" data-hud="scrub"><span class="fill" style="width: {pct}%"></span><span class="thumb"></span><span class="rest"></span></span>
+  <span class="where">{label}</span>"#,
+                pct = at.clamp(0.0, 1.0) * 100.0,
+                label = escape(label),
+            ),
+            None => format!(
+                r#"<span class="btn" data-hud="library"><span class="ico" data-icon="back"></span><span class="lbl">{library}</span></span>
+  <span class="title">{title}</span>
+  {back}<span class="btn" data-hud="readout">{readout}</span>"#,
+                title = escape(title),
+                readout = escape(readout),
+                library = tr!("hud-library"),
+                back = match back {
+                    Some(label) => {
+                        format!(r#"<span class="btn" data-hud="back">{}</span>"#, escape(label))
+                    }
+                    None => String::new(),
+                },
+            ),
         },
     )
 }
@@ -299,6 +315,20 @@ html .ico {{
   margin-right: 6px;
 }}
 html .lbl {{ white-space: nowrap; }}
+
+/* The go-to bar. The fill's width is a share of the track less the thumb,
+   which hangs into the padding, so 100% puts the thumb at the very end. */
+html .track {{
+  flex-grow: 1;
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding-right: 4px;
+}}
+html .fill {{ height: 4px; background: {accent}; }}
+html .thumb {{ width: 4px; height: 16px; flex-shrink: 0; background: {fg}; }}
+html .rest {{ flex-grow: 1; height: 4px; background: {border}; }}
+html .where {{ flex-shrink: 0; white-space: nowrap; padding-left: 16px; }}
 "#
     )
 }
@@ -310,7 +340,7 @@ mod tests {
     /// The bars are placed by computed margins, so the arithmetic is the layout.
     #[test]
     fn the_bars_sit_at_the_head_and_foot_of_the_window() {
-        let out = html("A Book", "42%", 1, false, 1000.0, Some("Back to page 7"), false);
+        let out = html("A Book", "42%", 1, false, 1000.0, Some("Back to page 7"), false, None);
         let push = 1000.0 - 2.0 * INSET - 2.0 * BAR;
         assert!(out.contains(&format!("margin-top: {push}px")), "{out}");
         assert!(out.contains("42%"));
@@ -336,8 +366,8 @@ mod tests {
     /// A bookmarked page has to look bookmarked: the button turns on and says so.
     #[test]
     fn the_bookmark_button_shows_the_page_is_bookmarked() {
-        let off = html("A Book", "5%", 1, false, 900.0, None, false);
-        let on = html("A Book", "5%", 1, false, 900.0, None, true);
+        let off = html("A Book", "5%", 1, false, 900.0, None, false, None);
+        let on = html("A Book", "5%", 1, false, 900.0, None, true, None);
         assert!(off.contains(r#"<span class="btn" data-hud="bookmark">"#), "{off}");
         assert!(on.contains(r#"<span class="btn on" data-hud="bookmark">"#), "{on}");
         assert!(on.contains("Bookmarked") && !off.contains("Bookmarked"));
@@ -347,7 +377,7 @@ mod tests {
     /// A window shorter than the bars must not produce a negative margin.
     #[test]
     fn a_tiny_window_does_not_push_the_bar_off_the_top() {
-        let out = html("A Book", "0%", 1, false, 10.0, Some("Back to page 7"), false);
+        let out = html("A Book", "0%", 1, false, 10.0, Some("Back to page 7"), false, None);
         assert!(out.contains("margin-top: 0px"), "{out}");
     }
 
@@ -355,7 +385,7 @@ mod tests {
     /// readout is ours but goes through the same escaping.
     #[test]
     fn the_title_cannot_inject_markup() {
-        let out = html(r#"<script>x</script>"#, "<b>", 2, false, 800.0, Some("Back to page 7"), false);
+        let out = html(r#"<script>x</script>"#, "<b>", 2, false, 800.0, Some("Back to page 7"), false, None);
         assert!(!out.contains("<script"), "{out}");
         assert!(out.contains("&lt;script&gt;"));
         assert!(!out.contains("<b>"));
@@ -365,7 +395,7 @@ mod tests {
     /// title has to be the bold one.
     #[test]
     fn the_controls_are_click_targets_and_the_title_is_bold() {
-        let out = html("A Book", "page 8 of 19", 2, false, 900.0, Some("Back to page 7"), false);
+        let out = html("A Book", "page 8 of 19", 2, false, 900.0, Some("Back to page 7"), false, None);
         for what in [
             "bookmark", "contents", "highlight", "smaller", "bigger", "columns", "readout",
             "library",
@@ -382,11 +412,11 @@ mod tests {
     /// Once the pointer is inside a highlight, the useful offer is removing it.
     #[test]
     fn the_highlight_control_becomes_a_remove_control() {
-        let plain = html("A Book", "5%", 1, false, 900.0, Some("Back to page 7"), false);
+        let plain = html("A Book", "5%", 1, false, 900.0, Some("Back to page 7"), false, None);
         assert!(plain.contains(r#"data-hud="highlight""#));
         assert!(!plain.contains("unhighlight"));
 
-        let inside = html("A Book", "5%", 1, true, 900.0, Some("Back to page 7"), false);
+        let inside = html("A Book", "5%", 1, true, 900.0, Some("Back to page 7"), false, None);
         assert!(inside.contains(r#"data-hud="unhighlight""#), "{inside}");
         assert!(inside.contains(">Remove<"));
         // The icon slot stays, whichever way the button reads.
@@ -411,7 +441,7 @@ mod tests {
     /// Every icon slot the window paints into has to exist in the markup.
     #[test]
     fn the_icon_slots_are_there_for_the_window_to_paint_into() {
-        let out = html("A Book", "5%", 2, false, 900.0, Some("Back to page 7"), false);
+        let out = html("A Book", "5%", 2, false, 900.0, Some("Back to page 7"), false, None);
         for icon in ["bookmark", "contents", "highlight", "back"] {
             assert!(out.contains(&format!(r#"data-icon="{icon}""#)), "missing {icon}: {out}");
         }
@@ -424,7 +454,7 @@ mod tests {
     /// HUD is rebuilt on every page turn, so that was a stream of it.
     #[test]
     fn the_document_declares_a_doctype() {
-        assert!(html("A", "1%", 1, false, 900.0, Some("Back to page 7"), false).starts_with("<!DOCTYPE html>"));
+        assert!(html("A", "1%", 1, false, 900.0, Some("Back to page 7"), false, None).starts_with("<!DOCTYPE html>"));
         assert!(crate::toc::html(&[], "Contents", "t", 0, 0).starts_with("<!DOCTYPE html>"));
         assert!(
             crate::grid::html(&[], "", crate::db::Sort::Recent, &[], None, 0..0)

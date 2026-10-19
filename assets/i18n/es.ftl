@@ -116,6 +116,7 @@ help-rescan = Volver a buscar en las carpetas
 help-settings = Ajustes
 help-turn = Pasar página
 help-chapter = Capítulo anterior o siguiente
+help-goto = Ir a una página o porcentaje
 help-contents = Índice
 help-find = Buscar en el libro
 help-marks = Marcadores y resaltados

@@ -883,6 +883,16 @@ lost to that.
   under it. A bookmark is listed only when it carries a note. Re-exporting
   overwrites, since the database holds the record.
 
+**`g` goes to a page or a percentage.** The HUD's bottom bar becomes a
+scrubber, with a rail, a thumb and "page 112 of 304 · chapter" beside it.
+Dragging or clicking the rail jumps when you let go. ←/→ move it 1%, PgUp/PgDn
+10%, Home/End to either end. Typed digits name a page, or a percentage with
+`%`. Enter goes there, and Esc or `g` closes it. The jump leaves "Back to page
+N" on the bar, as a followed link does. Opening it measures the book, because
+asking for page 200 is asking for page numbers. Until those counts land, the
+bar works in percentages, through `Book::locate`, which is the inverse of
+`progress`.
+
 ## 9. Spike findings (verified, not assumed)
 
 A throwaway binary was run against real books from the test library. Results:

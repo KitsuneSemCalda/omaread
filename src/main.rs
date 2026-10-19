@@ -391,7 +391,7 @@ mod tests {
 
         let (w, h) = (1200u32, 900u32);
         let doc = crate::chapter::layout_document(
-            crate::hud::html("Un libro", "page 8 of 19", 2, false, h as f32, Some("Back to page 7"), false),
+            crate::hud::html("Un libro", "page 8 of 19", 2, false, h as f32, Some("Back to page 7"), false, None),
             crate::hud::stylesheet(&crate::style::Theme::White.chrome()),
             None,
             crate::chapter::viewport(w, h, 1.0, false),
@@ -417,6 +417,27 @@ mod tests {
         {
             assert!(found.contains(want), "{want} is drawn but not clickable: {found:?}");
         }
+    }
+
+    /// The go-to bar is a click target across most of the foot, and the window
+    /// reads a fraction off the track's box, so the box has to be wide.
+    #[test]
+    fn the_go_to_track_is_hittable_across_the_foot() {
+        let (w, h) = (1200u32, 900u32);
+        let doc = crate::chapter::layout_document(
+            crate::hud::html("Un libro", "5%", 1, false, h as f32, None, false, Some((0.5, "page 3 of 9 · Uno"))),
+            crate::hud::stylesheet(&crate::style::Theme::White.chrome()),
+            None,
+            crate::chapter::viewport(w, h, 1.0, false),
+            h as f32,
+        )
+        .expect("the HUD must lay out");
+        let track = crate::find_by_attr(doc.dom(), 0, "data-hud", "scrub").expect("a track");
+        let (x, y, tw, th) = crate::chapter::node_rect(doc.dom(), track).expect("a box");
+        assert!(tw > w as f32 / 3.0, "the track is {tw}px of {w}");
+        let hit = doc.doc.hit(x + tw / 2.0, y + th / 2.0).expect("a hit");
+        assert_eq!(crate::ancestor_attr(doc.dom(), hit.node_id, "data-hud").as_deref(), Some("scrub"));
+        assert!(crate::find_by_attr(doc.dom(), 0, "data-hud", "library").is_none(), "it takes the bar's place");
     }
 
     /// The context menu is placed by the window, so its rows have to be where
@@ -449,6 +470,22 @@ mod tests {
 
     /// Two columns are only worth having when each still gets a real measure;
     /// below that the fallback has to be silent, not a squeezed 38ch column.
+    /// Typed into the go-to bar: a page when the book is measured, a
+    /// percentage with `%` or when it is not.
+    #[test]
+    fn the_go_to_bar_reads_pages_and_percentages() {
+        use super::goto_typed;
+        assert_eq!(goto_typed("", Some(101)), None);
+        assert_eq!(goto_typed("%", Some(101)), None);
+        assert_eq!(goto_typed("1", Some(101)), Some(0.0));
+        assert_eq!(goto_typed("51", Some(101)), Some(0.5));
+        assert_eq!(goto_typed("101", Some(101)), Some(1.0));
+        assert_eq!(goto_typed("9999", Some(101)), Some(1.0), "past the end is the end");
+        assert_eq!(goto_typed("25%", Some(101)), Some(0.25));
+        assert_eq!(goto_typed("25", None), Some(0.25), "no pages yet: a percentage");
+        assert_eq!(goto_typed("0", Some(1)), Some(0.0), "a one-page book");
+    }
+
     #[test]
     fn two_columns_need_the_width_and_the_reading_view() {
         let em = 20.0;
@@ -522,7 +559,7 @@ fn main() {
              omaread --index                 index every library book for search\n\n\
              Library:  type to search · #tag to filter · F2 tag a book\n\
                        Enter open · F3 open a file · Tab sort · F5 rescan · Esc clear/quit\n\
-             Reading:  ←/→ page · ↑/↓ chapter · Tab contents · / search · t theme · +/- size · c columns · l library · q quit\n\
+             Reading:  ←/→ page · ↑/↓ chapter · g go to page or % · Tab contents · / search · t theme · +/- size · c columns · l library · q quit\n\
                        move the mouse for the menus: marks, contents, size, columns\n\
              Contents: ↑/↓ select · Enter go · Tab or Esc back\n\
              Marks:    m list · b bookmark · drag to select · right-click menu · h highlight · y copy\n\
@@ -655,6 +692,12 @@ struct App {
     /// The foot of the page shows a percentage until you click it, then a page
     /// number. Clicking again swaps back.
     show_page: bool,
+    /// The go-to bar (`g`): where it points and what has been typed into it.
+    /// The fraction is of pages when the book is measured, of bytes when not —
+    /// the same two readings the readout gives.
+    goto: Option<(f32, String)>,
+    /// The pointer went down on its track and has not come up yet.
+    scrubbing: bool,
     /// The stored highlight the last press landed inside, if any. What makes the
     /// menu offer "Remove" instead of "Highlight".
     sel_mark: Option<i64>,
@@ -777,6 +820,8 @@ impl App {
             hud_bookmarked: false,
             hud_shown: false,
             show_page: false,
+            goto: None,
+            scrubbing: false,
             sel_mark: None,
             chapter_pages: None,
             pages_layout: String::new(),
@@ -1079,8 +1124,9 @@ impl App {
         let on_mark = self.sel_mark.is_some();
         let back = self.back.as_ref().map(|(_, _, label)| label.clone());
         self.hud_bookmarked = self.page_bookmarked();
+        let scrub = self.goto.as_ref().map(|(at, _)| (*at, self.goto_label(*at)));
         let key = format!(
-            "{readout}|{cols}|{on_mark}|{height}|{:?}|{}|{:?}|{}",
+            "{readout}|{cols}|{on_mark}|{height}|{:?}|{}|{:?}|{}|{scrub:?}",
             self.style.theme,
             book.title,
             back,
@@ -1098,6 +1144,7 @@ impl App {
             height,
             back.as_deref(),
             self.hud_bookmarked,
+            scrub.as_ref().map(|(at, label)| (*at, label.as_str())),
         );
         let ua = hud::stylesheet(&self.chrome());
         // The HUD spans the window; only the page is laid out at column width.
@@ -1939,6 +1986,7 @@ impl App {
             View::Reading => vec![
                 ("← → Space", tr!("help-turn")),
                 ("↑ ↓", tr!("help-chapter")),
+                ("g", tr!("help-goto")),
                 ("Tab", tr!("help-contents")),
                 ("/", tr!("help-find")),
                 ("m", tr!("help-marks")),
@@ -2025,6 +2073,157 @@ impl App {
         self.hud_doc = None;
         self.save_position();
         self.request_redraw();
+    }
+
+    /// Open the go-to bar where the reader is. Asking where page 200 is is
+    /// asking for page numbers, so the book is measured as the readout's click
+    /// would; until that lands the bar works in percentages.
+    fn open_goto(&mut self) {
+        self.measure_book();
+        let here = match self.measured_pages() {
+            Some(pages) => {
+                let total = pages.iter().sum::<usize>();
+                (self.book_page().0 - 1) as f32 / total.saturating_sub(1).max(1) as f32
+            }
+            None => self.progress(),
+        };
+        self.goto = Some((here, String::new()));
+        self.menu = None;
+        self.hud_shown = true;
+        self.request_redraw();
+    }
+
+    /// Where a fraction of the book is: the chapter, and either the page in it
+    /// (measured) or how far through it the bytes say (not).
+    fn goto_place(&self, at: f32) -> Option<(usize, Result<usize, f32>)> {
+        if let Some(pages) = self.measured_pages() {
+            let total = pages.iter().sum::<usize>();
+            let mut n = (at * total.saturating_sub(1) as f32).round() as usize;
+            for (spine, &count) in pages.iter().enumerate() {
+                if n < count {
+                    return Some((spine, Ok(n)));
+                }
+                n -= count;
+            }
+            return Some((pages.len().checked_sub(1)?, Ok(usize::MAX)));
+        }
+        let (spine, within) = self.book.as_ref()?.locate(at);
+        Some((spine, Err(within)))
+    }
+
+    /// What the go-to bar says it points at: the page or the percentage, and
+    /// the chapter it is in.
+    fn goto_label(&self, at: f32) -> String {
+        let (Some(book), Some((spine, _))) = (&self.book, self.goto_place(at)) else {
+            return String::new();
+        };
+        let place = match self.measured_pages() {
+            Some(pages) => {
+                let total = pages.iter().sum::<usize>().max(1);
+                let page = (at * (total - 1) as f32).round() as usize + 1;
+                i18n::tr!("hud-page-of", page = page, total = total)
+            }
+            None => format!("{}%", (at * 100.0).round() as u8),
+        };
+        // The track needs the rest of the bar, so a long chapter name gives way.
+        let mut name = chapter_name(&book.toc, spine);
+        if let Some((cut, _)) = name.char_indices().nth(40) {
+            name = format!("{}…", name[..cut].trim_end());
+        }
+        format!("{place} · {name}")
+    }
+
+    /// Go where the bar points, leaving the way back on the bar.
+    fn goto_jump(&mut self) {
+        let Some((at, _)) = self.goto.take() else { return };
+        let Some((spine, place)) = self.goto_place(at) else { return };
+        if self.chapter.is_some() {
+            self.back = Some((self.index, self.page, self.here_label()));
+        }
+        if spine != self.index || self.chapter.is_none() {
+            self.load_chapter(spine);
+        }
+        self.page = match (place, &self.chapter) {
+            (Ok(page), _) => page,
+            (Err(within), Some(ch)) => ch.pages.page_containing(within * ch.pages.content_height),
+            (Err(_), None) => 0,
+        }
+        .min(self.page_count().saturating_sub(1));
+        self.resume_page = self.page;
+        self.hud_doc = None;
+        self.poke_hud();
+        self.save_position();
+        self.request_redraw();
+    }
+
+    /// The go-to bar takes its own keys; any other closes it, and Escape or
+    /// `g` do nothing else.
+    fn goto_key(&mut self, key: &Key) -> bool {
+        let total = self.measured_pages().map(|p| p.iter().sum::<usize>());
+        let Some((mut at, mut typed)) = self.goto.take() else { return false };
+        match key {
+            Key::Named(NamedKey::Enter) => {
+                self.goto = Some((at, typed));
+                self.goto_jump();
+                return true;
+            }
+            Key::Named(NamedKey::Escape) => {}
+            Key::Character(c) if c.as_str() == "g" => {}
+            Key::Named(named) => {
+                at = match named {
+                    NamedKey::ArrowLeft => at - 0.01,
+                    NamedKey::ArrowRight => at + 0.01,
+                    NamedKey::PageUp => at - 0.1,
+                    NamedKey::PageDown => at + 0.1,
+                    NamedKey::Home => 0.0,
+                    NamedKey::End => 1.0,
+                    NamedKey::Backspace => {
+                        typed.pop();
+                        goto_typed(&typed, total).unwrap_or(at)
+                    }
+                    _ => {
+                        self.poke_hud();
+                        self.request_redraw();
+                        return false;
+                    }
+                };
+                if *named != NamedKey::Backspace {
+                    typed.clear();
+                }
+                self.goto = Some((at.clamp(0.0, 1.0), typed));
+            }
+            Key::Character(c) if c.chars().all(|c| c.is_ascii_digit() || c == '%') => {
+                typed.push_str(c);
+                at = goto_typed(&typed, total).unwrap_or(at);
+                self.goto = Some((at, typed));
+            }
+            _ => {
+                self.poke_hud();
+                self.request_redraw();
+                return false;
+            }
+        }
+        // Closed: the HUD goes back to leaving on its own.
+        if self.goto.is_none() {
+            self.poke_hud();
+        }
+        self.request_redraw();
+        true
+    }
+
+    /// Move the go-to bar to the pointer, over its track.
+    fn scrub_to_pointer(&mut self) {
+        let Some(hud) = &self.hud_doc else { return };
+        let Some((x, _, w, _)) = find_by_attr(hud.dom(), 0, "data-hud", "scrub")
+            .and_then(|n| chapter::node_rect(hud.dom(), n))
+        else {
+            return;
+        };
+        let at = ((self.pointer_in_ui().0 - x) / w.max(1.0)).clamp(0.0, 1.0);
+        if let Some(goto) = self.goto.as_mut() {
+            *goto = (at, String::new());
+            self.request_redraw();
+        }
     }
 
     /// Where the reader is, worded for the way-back button. Always about the
@@ -2238,7 +2437,15 @@ impl App {
 
     /// Act on a HUD control by name: a click, or a screen reader's request.
     fn hud_do(&mut self, what: &str) -> bool {
+        // Anything else on the bars is done with the go-to bar.
+        if what != "scrub" {
+            self.goto = None;
+        }
         match what {
+            "scrub" => {
+                self.scrubbing = true;
+                self.scrub_to_pointer();
+            }
             "bookmark" => self.toggle_bookmark(),
             "contents" => {
                 self.toc_mode = TocMode::Contents;
@@ -3702,6 +3909,9 @@ impl App {
                 return;
             }
         }
+        if self.goto_key(&key) {
+            return;
+        }
         match key {
             Key::Named(NamedKey::Escape) => self.to_library(),
             Key::Named(NamedKey::Tab) => self.open_toc(),
@@ -3732,6 +3942,7 @@ impl App {
                 "h" => drop(self.highlight_selection()),
                 "y" => self.copy_selection(),
                 "c" => self.toggle_columns(),
+                "g" => self.open_goto(),
                 "t" => {
                     self.style.theme = match self.style.theme {
                         Theme::Omarchy => Theme::White,
@@ -3927,6 +4138,18 @@ fn is_note(tag: &str, text: &str) -> bool {
 }
 
 /// The chapter `spine` falls in, by the book's own navigation when it has some.
+/// What the digits typed into the go-to bar point at, as a fraction of the
+/// book: a percentage when they end in `%` or the book has no page numbers
+/// yet, a page of `pages` otherwise. `None` until there is a number.
+fn goto_typed(typed: &str, pages: Option<usize>) -> Option<f32> {
+    let n: f32 = typed.trim_end_matches('%').parse().ok()?;
+    let at = match pages {
+        Some(total) if !typed.ends_with('%') => (n - 1.0) / total.saturating_sub(1).max(1) as f32,
+        _ => n / 100.0,
+    };
+    Some(at.clamp(0.0, 1.0))
+}
+
 fn chapter_name(toc: &[book::TocEntry], spine: usize) -> String {
     toc.iter()
         .filter(|e| e.spine <= spine)
@@ -4145,6 +4368,9 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
                     if self.dragging {
                         self.extend_selection();
                     }
+                    if self.scrubbing {
+                        self.scrub_to_pointer();
+                    }
                     // Repaint only when the card under the pointer changes, not
                     // on every motion event.
                     let over = self.card_under_pointer();
@@ -4189,11 +4415,17 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
                         // The HUD is on top of the page, so it gets the click,
                         // then a link, and only then does the page take it.
                         if !self.hud_action() && !self.link_action() {
+                            self.goto = None;
                             self.press_at = Some(self.cursor);
                             self.begin_selection();
                         }
                     }
                     ElementState::Pressed => self.on_click(),
+                    // Let go of the go-to bar's track: go there.
+                    ElementState::Released if self.scrubbing => {
+                        self.scrubbing = false;
+                        self.goto_jump();
+                    }
                     ElementState::Released => {
                         let dragged = std::mem::take(&mut self.dragging);
                         let (px, py) = self.press_at.take().unwrap_or((f32::MAX, f32::MAX));
@@ -4308,7 +4540,8 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
                 match self.hud_until {
                     Some(at) if now >= at => {
                         self.hud_until = None;
-                        self.hud_shown = false;
+                        // The go-to bar is in the HUD and stays until it is done.
+                        self.hud_shown = self.goto.is_some();
                         self.request_redraw();
                     }
                     at => wake.push(at),

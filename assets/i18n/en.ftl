@@ -113,6 +113,7 @@ help-rescan = Rescan the folders
 help-settings = Settings
 help-turn = Turn the page
 help-chapter = Previous or next chapter
+help-goto = Go to a page or percentage
 help-contents = Contents
 help-find = Search the book
 help-marks = Bookmarks and highlights

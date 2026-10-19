@@ -139,7 +139,7 @@ pub fn run(args: &[String]) -> i32 {
             };
 
             chapter::layout_document(
-                hud::html(&book.title, &readout, cols as usize, false, h as f32 / ui, None, false),
+                hud::html(&book.title, &readout, cols as usize, false, h as f32 / ui, None, false, None),
                 hud::stylesheet(&style.chrome()),
                 None,
                 // The HUD spans the window, not a column.
