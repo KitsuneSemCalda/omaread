@@ -8,6 +8,7 @@
 
 use crate::book::TocEntry;
 use crate::grid::escape;
+use crate::style::Chrome;
 
 /// Deeper nesting than this reads as noise, so everything below sits at the
 /// same indent. Indent widths live in the stylesheet, as `.d0`..`.d3` — a class
@@ -65,13 +66,15 @@ fn row(index: usize, e: &TocEntry, here: bool, selected: bool) -> String {
 ///
 /// `html`-prefixed for the same reason every other sheet here is: blitz-dom
 /// applies its defaults *after* ours (CONTEXT.md §9).
-pub fn stylesheet(bg: &str, fg: &str, subtle: &str, panel: &str) -> String {
+pub fn stylesheet(c: &Chrome) -> String {
+    let Chrome { bg, fg, subtle, accent, font, .. } = c;
+    let (selected, border) = (c.tint(0.08), c.tint(0.25));
     format!(
         r#"
 html {{
   box-sizing: border-box;
-  font-family: "Literata", "Charis SIL", serif;
-  font-size: 15px;
+  font-family: {font};
+  font-size: 14px;
   background: {bg};
   color: {fg};
 }}
@@ -83,20 +86,21 @@ html .bar {{
   display: flex;
   align-items: baseline;
 }}
-html .title {{ font-size: 26px; font-weight: 600; }}
-html .meta {{ font-size: 13px; color: {subtle}; padding-left: 14px; }}
+html .title {{ font-size: 20px; font-weight: 600; }}
+html .meta {{ font-size: 12px; color: {subtle}; padding-left: 14px; }}
 
 /* A contents list is a column of short lines; the reading measure does not
    apply, but an unbounded one on a wide window is a scan across the desk. */
 html .list {{ max-width: 640px; }}
 
 html .row {{
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1.35;
   padding-top: 7px;
   padding-bottom: 7px;
   padding-right: 12px;
-  border-radius: 7px;
+  /* Transparent until selected, so selecting a row does not shift it. */
+  border: 1px solid transparent;
 }}
 html .row.d0 {{ padding-left: 14px; }}
 html .row.d1 {{ padding-left: 36px; }}
@@ -104,7 +108,8 @@ html .row.d2 {{ padding-left: 58px; }}
 html .row.d3 {{ padding-left: 80px; }}
 html .empty {{ padding: 40px 14px; color: {subtle}; font-size: 15px; }}
 html .row.here {{ font-weight: 600; }}
-html .row.selected {{ background: {panel}; }}
+/* Omarchy's menu row: a faint fill and hairline, the label in the accent. */
+html .row.selected {{ background: {selected}; border-color: {border}; color: {accent}; }}
 "#
     )
 }
@@ -137,7 +142,7 @@ mod tests {
         // No chapter in common, so nothing picks up `here` and the depth
         // classes are all this asserts on.
         let out = html(&e, "Contents", "t", 99, 99);
-        let css = stylesheet("#fff", "#111", "#888", "#eee");
+        let css = stylesheet(&crate::style::Theme::White.chrome());
         assert!(out.contains(r#"class="row d0""#), "{out}");
         assert!(out.contains(r#"class="row d1""#));
         assert!(out.contains(&format!(r#"class="row d{MAX_DEPTH}""#)));
@@ -161,7 +166,7 @@ mod tests {
         let e: Vec<TocEntry> = (0..60)
             .map(|i| entry(&format!("Capítulo {i}"), i % 3, i))
             .collect();
-        let ua = stylesheet("#fff", "#111", "#888", "#eee");
+        let ua = stylesheet(&crate::style::Theme::White.chrome());
         let doc = crate::chapter::layout_document(
             html(&e, "Contents", "Un libro", 7, 7),
             ua,

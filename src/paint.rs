@@ -277,12 +277,12 @@ pub fn outline(
     if w <= 0.0 || h <= 0.0 {
         return;
     }
-    let r = kurbo::RoundedRect::new(
+    // Square, as Omarchy draws everything (Hyprland's `rounding = 0`).
+    let r = kurbo::Rect::new(
         x as f64 * scale,
         y as f64 * scale,
         (x + w) as f64 * scale,
         (y + h) as f64 * scale,
-        6.0 * scale,
     );
     PaintScene::stroke(
         scene,
@@ -294,7 +294,7 @@ pub fn outline(
     );
 }
 
-/// Fill a rounded rectangle given in CSS pixels — the wash under the pointer.
+/// Fill a rectangle given in CSS pixels — the wash under the pointer.
 ///
 /// Painted *over* the surface, translucent, for the same reason the outline is
 /// painted at all: a `:hover` class would mean rebuilding the document on every
@@ -305,12 +305,12 @@ pub fn wash(scene: &mut impl PaintScene, rect: (f32, f32, f32, f32), color: Colo
     if w <= 0.0 || h <= 0.0 {
         return;
     }
-    let r = kurbo::RoundedRect::new(
+    // Square, as Omarchy draws everything (Hyprland's `rounding = 0`).
+    let r = kurbo::Rect::new(
         x as f64 * scale,
         y as f64 * scale,
         (x + w) as f64 * scale,
         (y + h) as f64 * scale,
-        6.0 * scale,
     );
     PaintScene::fill(scene, Fill::NonZero, Affine::IDENTITY, color, None, &r);
 }

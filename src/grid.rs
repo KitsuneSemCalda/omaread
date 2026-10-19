@@ -6,6 +6,7 @@
 
 use crate::i18n::tr;
 use crate::db::{BookRow, Sort};
+use crate::style::Chrome;
 
 /// Cover images resolve through this origin; the provider reads the blob out of
 /// SQLite rather than touching the disk.
@@ -142,8 +143,8 @@ fn search_form(
 /// A card has room for two lines of title and one of author; anything longer
 /// used to make its whole row taller and push the next row off the page.
 ///
-/// ~17 characters of a long word fit a 225px line at 21px, so two lines is a
-/// 34-character budget, cut back to a word boundary.
+/// ~23 monospace characters fit a 225px line at 16px, so a 34-character
+/// budget, cut back to a word boundary, leaves room for where the words wrap.
 // ponytail: a character count, not a text measurement — a line of narrow glyphs
 // can still wrap to a third line, which lands in the 30px gap between rows
 // rather than on the next cover. Measure with parley if that ever collides.
@@ -268,49 +269,50 @@ pub const MENU_W: f32 = 520.0;
 
 /// `left` and `top` put the panel under the cog that opened it, in window CSS
 /// pixels — a menu that opens somewhere else is a menu you have to look for.
-pub fn menu_stylesheet(fg: &str, subtle: &str, panel: &str, left: f32, top: f32, width: f32) -> String {
+pub fn menu_stylesheet(c: &Chrome, left: f32, top: f32, width: f32) -> String {
+    let Chrome { bg, fg, subtle, accent, font, .. } = c;
+    let (border, selected) = (c.tint(0.4), c.tint(0.18));
     format!(
         r#"
 html {{
   box-sizing: border-box;
-  font-family: "Literata", "Charis SIL", serif;
+  font-family: {font};
   background: transparent;
   color: {fg};
 }}
 html *, html *::before, html *::after {{ box-sizing: inherit; }}
 html body {{ margin: 0; padding: {top}px 0 0 {left}px; background: transparent; }}
+/* An Omarchy panel: square, the window's ground, a hairline of text colour. */
 html .menu {{
   width: {width}px;
-  padding: 14px 0 10px 0;
-  border-radius: 12px;
-  border: 1px solid {subtle};
-  background: {panel};
-  font-size: 16px;
+  padding: 12px 0 8px 0;
+  border: 1px solid {border};
+  background: {bg};
+  font-size: 14px;
 }}
 html .head {{
-  padding: 8px 22px 4px 22px;
-  font-size: 13px;
+  padding: 8px 20px 4px 20px;
+  font-size: 12px;
   color: {subtle};
 }}
 html .row {{
   display: flex;
-  padding: 5px 12px;
+  padding: 5px 10px;
   margin: 0 10px;
-  border-radius: 7px;
 }}
-/* The setting in force, in the same blue the selection and the caret use. */
+/* The setting in force: Omarchy's selected fill, its tick in the accent. */
 html .row.on {{
   font-weight: 600;
-  background: rgba(10, 132, 255, 0.20);
+  background: {selected};
 }}
 html .tick {{ width: 22px; color: {subtle}; }}
-html .row.on .tick {{ color: #0a84ff; }}
-html .caret {{ color: #0a84ff; }}
+html .row.on .tick {{ color: {accent}; }}
+html .caret {{ color: {accent}; }}
 /* A row's key, pushed to the right edge: the reading view's context menu. */
 html .key {{ margin-left: auto; padding-left: 24px; color: {subtle}; }}
 html .foot {{
-  padding: 10px 22px 2px 22px;
-  font-size: 12px;
+  padding: 10px 20px 2px 20px;
+  font-size: 11px;
   color: {subtle};
 }}
 "#
@@ -321,14 +323,16 @@ html .foot {{
 ///
 /// Every selector is prefixed with `html` for the same reason the reading
 /// stylesheet is: blitz-dom applies its defaults *after* ours (CONTEXT.md §9).
-pub fn stylesheet(bg: &str, fg: &str, subtle: &str, panel: &str) -> String {
+pub fn stylesheet(c: &Chrome) -> String {
+    let Chrome { bg, fg, subtle, panel, accent, font } = c;
+    let (border, field) = (c.tint(0.4), c.tint(0.04));
     let grid_w = grid_width();
     format!(
         r#"
 html {{
   box-sizing: border-box;
-  font-family: "Literata", "Charis SIL", serif;
-  font-size: 15px;
+  font-family: {font};
+  font-size: 14px;
   background: {bg};
   color: {fg};
 }}
@@ -346,8 +350,8 @@ html .bar {{
   align-items: flex-start;
 }}
 html .brand {{ flex-grow: 1; }}
-html .title {{ font-size: 34px; font-weight: 600; }}
-html .meta {{ font-size: 14px; color: {subtle}; padding-left: 14px; }}
+html .title {{ font-size: 26px; font-weight: 600; }}
+html .meta {{ font-size: 13px; color: {subtle}; padding-left: 14px; }}
 
 /* An empty box the window paints the cog into — the bundled faces carry no
    symbol glyphs, so every icon here is drawn (CONTEXT.md §9). `display: flex`
@@ -362,30 +366,30 @@ html .gear {{
 
 /* The search column sits at the right of the bar. */
 html .search {{ width: 420px; padding-left: 28px; }}
+/* An Omarchy text field: the resting control fill and its hairline. */
 html .field {{
-  background: {panel};
-  border-radius: 8px;
-  padding: 9px 13px;
-  font-size: 14px;
+  background: {field};
+  border: 1px solid {border};
+  padding: 8px 12px;
+  font-size: 13px;
   overflow: hidden;
 }}
 html .hint {{ color: {subtle}; }}
-html .caret {{ color: #0a84ff; padding-left: 1px; }}
+html .caret {{ color: {accent}; padding-left: 1px; }}
 
 /* Its own ground: the list used to float on the page background, which put
    plain text under the search box with nothing to say it was a menu. */
 html .suggest {{
-  background: {panel};
-  border-radius: 8px;
-  padding: 7px 0;
-  margin-top: 7px;
+  background: {bg};
+  border: 1px solid {border};
+  padding: 6px 0;
+  margin-top: 6px;
 }}
 html .sug {{
   display: flex;
   align-items: baseline;
   font-size: 13px;
-  padding: 5px 13px;
-  border-radius: 6px;
+  padding: 5px 12px;
 }}
 html .sugtext {{ flex-grow: 1; overflow: hidden; }}
 html .sughint {{ color: {subtle}; font-size: 12px; padding-left: 12px; }}
@@ -411,7 +415,6 @@ html .card {{
   /* Flex items shrink by default, and shrunken cards make the CSS disagree with
      `per_row`: seven were fitting a window the arithmetic said held five. */
   flex-shrink: 0;
-  border-radius: 10px;
 }}
 html .card.missing {{ opacity: 0.45; }}
 
@@ -419,7 +422,6 @@ html .cover {{
   display: block;
   width: 100%;
   height: {COVER_H}px;
-  border-radius: 5px;
   /* Covers arrive at exactly this size (`net::FitCover`), so nearest is exact. */
   image-rendering: pixelated;
 }}
@@ -433,14 +435,14 @@ html .cover.blank {{ background: {panel}; }}
    cover that no margin collapsing can eat.
 
    No track behind the fill — on a dark theme the unread part read as a black
-   bar stuck to the cover. How far along the blue reaches is the whole message. */
+   bar stuck to the cover. How far along the accent reaches is the whole message. */
 html .prog {{ height: 12px; padding-top: 4px; }}
-html .fill {{ height: 4px; border-radius: 2px; background: #0a84ff; }}
-html .name {{ font-size: 21px; line-height: 1.25; }}
-html .by {{ font-size: 18px; color: {subtle}; padding-top: 3px; }}
+html .fill {{ height: 4px; background: {accent}; }}
+html .name {{ font-size: 16px; line-height: 1.25; }}
+html .by {{ font-size: 14px; color: {subtle}; padding-top: 3px; }}
 html .tags {{ font-size: 11px; color: {subtle}; padding-top: 3px; }}
 
-html .empty {{ padding: 40px 4px; color: {subtle}; font-size: 15px; }}
+html .empty {{ padding: 40px 4px; color: {subtle}; font-size: 14px; }}
 "#
     )
 }
@@ -525,7 +527,7 @@ mod tests {
             })
             .collect();
         let html = html(&rows, "", Sort::Recent, &[], None, 0..40);
-        let ua = stylesheet("#fff", "#111", "#888", "#eee");
+        let ua = stylesheet(&crate::style::Theme::White.chrome());
         let doc = crate::chapter::layout_document(
             html,
             ua,
@@ -616,7 +618,7 @@ mod tests {
             .collect();
         let doc = crate::chapter::layout_document(
             html(&rows, "", Sort::Recent, &[], None, 0..rows.len()),
-            stylesheet("#fff", "#111", "#888", "#eee"),
+            stylesheet(&crate::style::Theme::White.chrome()),
             None,
             crate::chapter::viewport(1896, 2092, 1.0, false),
             1992.0,
@@ -686,7 +688,7 @@ mod tests {
         r.progress = 0.5;
         let doc = crate::chapter::layout_document(
             html(&[r], "", Sort::Recent, &[], None, 0..1),
-            stylesheet("#fff", "#111", "#888", "#eee"),
+            stylesheet(&crate::style::Theme::White.chrome()),
             None,
             crate::chapter::viewport(1200, 900, 1.0, false),
             800.0,
@@ -708,7 +710,7 @@ mod tests {
     fn the_cog_does_not_crowd_the_search_box() {
         let doc = crate::chapter::layout_document(
             html(&[], "", Sort::Recent, &[], None, 0..0),
-            stylesheet("#fff", "#111", "#888", "#eee"),
+            stylesheet(&crate::style::Theme::White.chrome()),
             None,
             crate::chapter::viewport(1400, 700, 1.0, false),
             600.0,
@@ -750,7 +752,7 @@ mod tests {
         assert_eq!(per_row(10.0), 1, "never zero columns");
 
         // The stylesheet has to carry the same cap the arithmetic assumes.
-        let css = stylesheet("#fff", "#111", "#888", "#eee");
+        let css = stylesheet(&crate::style::Theme::White.chrome());
         assert!(css.contains(&format!("max-width: {}px", grid_width())), "{css}");
     }
 

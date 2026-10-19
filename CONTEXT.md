@@ -1026,6 +1026,14 @@ integration degrades to a sensible default elsewhere.
   showed was `muted`, which several themes put barely off the background, so
   Omaread never uses it as text: captions, link underlines and HUD labels are
   `--fg` faded 60% toward `--bg` instead, legible in every stock theme.
+- **The chrome is drawn the way Omarchy's shell is; the page stays Apple
+  Books.** Library, contents, HUD and menus are set in monospace (the desktop's
+  on Omarchy, bundled Plex elsewhere), square, with panels on the window ground
+  behind a 1px border of text at 40%. Control states are Omarchy's text tints:
+  0.08 hovered (plus a 0.25 hairline), 0.18 selected. The accent — selection,
+  caret, progress, the selected card — is the theme's `accent` on Omarchy and
+  Apple's blue elsewhere. The book, and the note popup that quotes it, stay in
+  Literata.
 - Ship an `omaread.css.tpl` for Omarchy's template-rendering theme mechanism
   (cf. `~/.config/omarchy/themed/alacritty.toml.tpl.sample`) rather than parsing
   theme files ourselves. **Done**, in `assets/omarchy/`. Omarchy renders every

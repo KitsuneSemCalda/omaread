@@ -44,22 +44,21 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 /// A highlighter is opaque enough to see and transparent enough to read
-/// through; the selection is the same idea in the system's blue.
+/// through; the selection is the same idea in the chrome's accent
+/// (`SELECTION_ALPHA`).
 pub const HIGHLIGHT: Color = Color::from_rgba8(0xff, 0xd6, 0x2e, 0x66);
-const SELECTION: Color = Color::from_rgba8(0x0a, 0x84, 0xff, 0x40);
+const SELECTION_ALPHA: f32 = 0.25;
 /// The underline that says a highlight carries a note: the highlighter's own
 /// amber, opaque, so it reads on every theme.
 const NOTED: Color = Color::from_rgb8(0xe0, 0x9a, 0x00);
-/// The library's selected card, outlined rather than filled so the cover shows.
-pub const CARD_OUTLINE: Color = Color::from_rgb8(0x0a, 0x84, 0xff);
-/// The card under the pointer. Light enough to read the cover through.
-const HOVER: Color = Color::from_rgba8(0x0a, 0x84, 0xff, 0x24);
-/// A settings row under the pointer. Neutral, not the accent: the row already
-/// *in force* is tinted blue, and two blues a shade apart say nothing.
-const MENU_HOVER: Color = Color::from_rgba8(0x80, 0x80, 0x80, 0x38);
-/// The HUD control under the pointer. Heavier than the card wash: it sits on a
-/// flat panel rather than a photograph, so a cover-safe tint reads as nothing.
-const HUD_HOVER: Color = Color::from_rgba8(0x0a, 0x84, 0xff, 0x3d);
+/// The card under the pointer, outlined in the text colour at this alpha —
+/// Omarchy's image picker marks its unselected slices the same way, and the
+/// selected card gets the accent, as the picker's selected slice does.
+const CARD_HOVER_ALPHA: f32 = 0.28;
+/// A HUD control or menu row under the pointer: Omarchy's hover-cursor state,
+/// a text-colour fill and a fainter hairline (`[controls]` in its shell.toml).
+const HOVER_FILL_ALPHA: f32 = 0.08;
+const HOVER_BORDER_ALPHA: f32 = 0.25;
 
 #[derive(Clone, Copy)]
 struct Slide {
@@ -131,7 +130,7 @@ mod tests {
         let rows: Vec<BookRow> = (0..40)
             .map(|i| BookRow { hash: format!("h{i}"), title: format!("L{i}"), ..Default::default() })
             .collect();
-        let ua = crate::grid::stylesheet("#fff", "#111", "#888", "#eee");
+        let ua = crate::grid::stylesheet(&crate::style::Theme::White.chrome());
 
         for width in [900u32, 1200, 1517, 2000, 3840] {
             let doc = crate::chapter::layout_document(
@@ -247,7 +246,7 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        let ua = crate::grid::stylesheet("#fff", "#111", "#888", "#eee");
+        let ua = crate::grid::stylesheet(&crate::style::Theme::White.chrome());
         let markup = crate::grid::html(
             &rows,
             "",
@@ -293,7 +292,7 @@ mod tests {
         let (w, h) = (1200u32, 900u32);
         let doc = crate::chapter::layout_document(
             crate::hud::html("Un libro", "page 8 of 19", 2, false, h as f32, Some("Back to page 7")),
-            crate::hud::stylesheet("#111", "#888", "#eee"),
+            crate::hud::stylesheet(&crate::style::Theme::White.chrome()),
             None,
             crate::chapter::viewport(w, h, 1.0, false),
             h as f32,
@@ -327,7 +326,7 @@ mod tests {
         let (left, top) = (300.0_f32, 200.0_f32);
         let doc = crate::chapter::layout_document(
             crate::hud::context_html(true, true, false),
-            crate::grid::menu_stylesheet("#111", "#888", "#eee", left, top, crate::hud::CONTEXT_W),
+            crate::grid::menu_stylesheet(&crate::style::Theme::White.chrome(), left, top, crate::hud::CONTEXT_W),
             None,
             crate::chapter::viewport(1200, 900, 1.0, false),
             900.0,
@@ -710,7 +709,7 @@ impl App {
         println!(
             "omaread: chrome — {}",
             match &app.style.omarchy {
-                Some((bg, ..)) => format!("Omarchy palette, ground {bg}"),
+                Some(c) => format!("Omarchy palette, ground {}", c.bg),
                 None => "built-in palette (no omaread.css from Omarchy)".into(),
             }
         );
@@ -858,8 +857,7 @@ impl App {
     /// for nearly two seconds and swallowed the clicks that arrived meanwhile.
     fn build_library(&mut self) {
         let started = Instant::now();
-        let (bg, fg, subtle, panel) = self.chrome();
-        let ua = grid::stylesheet(&bg, &fg, &subtle, &panel);
+        let ua = grid::stylesheet(&self.chrome());
         let markup = |covers: std::ops::Range<usize>| {
             grid::html(
                 &self.rows,
@@ -935,9 +933,8 @@ impl App {
             return;
         }
 
-        let (_, fg, subtle, panel) = self.chrome();
         let html = hud::html(&book.title, &readout, cols, on_mark, height, back.as_deref());
-        let ua = hud::stylesheet(&fg, &subtle, &panel);
+        let ua = hud::stylesheet(&self.chrome());
         // The HUD spans the window; only the page is laid out at column width.
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.hud_doc = chapter::layout_document(html, ua, None, vp, self.page_height());
@@ -1187,7 +1184,7 @@ impl App {
         let (tx, rx) = channel();
         let provider: Arc<dyn blitz_traits::net::NetProvider<Resource>> =
             Arc::new(net::BookNetProvider::new(book, Arc::new(ChannelCallback(tx))));
-        let (bg, ..) = self.chrome();
+        let bg = self.chrome().bg;
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         let src = format!("{}{}", net::ORIGIN, href.trim_start_matches('/'));
         let Some(mut fig) = chapter::layout_document(
@@ -1300,7 +1297,6 @@ impl App {
 
     /// Lay out the settings panel where `open_menu` put it.
     fn build_menu(&mut self) {
-        let (_, fg, subtle, panel) = self.chrome();
         let (left, top) = self.menu_at.unwrap_or((grid::SIDE_PAD as f32, 74.0));
         let folders: Vec<String> =
             library::folders().iter().map(|p| p.display().to_string()).collect();
@@ -1313,7 +1309,7 @@ impl App {
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.menu = chapter::layout_document(
             html,
-            grid::menu_stylesheet(&fg, &subtle, &panel, left, top, grid::MENU_W),
+            grid::menu_stylesheet(&self.chrome(), left, top, grid::MENU_W),
             None,
             vp,
             self.page_height(),
@@ -1456,11 +1452,10 @@ impl App {
         let left = x.min(win_w - hud::CONTEXT_W - 8.0).max(0.0);
         let top = y.min(win_h - rows * 34.0 - 32.0).max(0.0);
 
-        let (_, fg, subtle, panel) = self.chrome();
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.menu = chapter::layout_document(
             html,
-            grid::menu_stylesheet(&fg, &subtle, &panel, left, top, hud::CONTEXT_W),
+            grid::menu_stylesheet(&self.chrome(), left, top, hud::CONTEXT_W),
             None,
             vp,
             self.page_height(),
@@ -1595,11 +1590,10 @@ impl App {
     }
 
     fn open_note(&mut self, text: &str) {
-        let (_, fg, subtle, panel) = self.chrome();
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.popup = chapter::layout_document(
             hud::note_html(text),
-            hud::note_stylesheet(&fg, &subtle, &panel),
+            hud::note_stylesheet(&self.chrome()),
             None,
             vp,
             self.page_height(),
@@ -1961,9 +1955,8 @@ impl App {
         }
         let entries = self.toc_entries();
         let (heading, subtitle) = self.toc_heading(entries.len());
-        let (bg, fg, subtle, panel) = self.chrome();
         let html = toc::html(&entries, &heading, &subtitle, self.index, self.toc_sel);
-        let ua = toc::stylesheet(&bg, &fg, &subtle, &panel);
+        let ua = toc::stylesheet(&self.chrome());
         self.toc_doc =
             chapter::layout_document(html, ua, None, self.viewport(), self.page_height());
     }
@@ -2708,7 +2701,7 @@ impl App {
                 let [r, g, b] = self.style.background_rgb();
                 Color::from_rgb8(r, g, b)
             }
-            _ => parse_hex(&self.chrome().0),
+            _ => parse_hex(&self.chrome().bg),
         };
 
         match self.view {
@@ -2767,7 +2760,9 @@ impl App {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
-        let ink = parse_hex(&self.chrome().1);
+        let chrome = self.chrome();
+        let ink = parse_hex(&chrome.fg);
+        let accent = parse_hex(&chrome.accent);
 
         // Disjoint field borrows: `render` takes the renderer mutably, the
         // closure needs the document mutably to set the page offset. That rules
@@ -2862,21 +2857,19 @@ impl App {
                     paint::column(scene, doc, top, extent, x, col_w, &frame, ground, col == 0);
                     paint::bands(scene, &highlights, HIGHLIGHT, top, extent, x, &frame);
                     paint::bands(scene, &noted, NOTED, top, extent, x, &frame);
-                    paint::bands(scene, &selection, SELECTION, top, extent, x, &frame);
+                    paint::bands(scene, &selection, accent.with_alpha(SELECTION_ALPHA), top, extent, x, &frame);
                 }
                 }
-                // A wash under the pointer, before the outline, so a card that
-                // is both hovered and selected still reads as selected.
+                // Before the selection's outline, so a card that is both
+                // hovered and selected still reads as selected.
                 if let Some((cx, cy, cw, chh)) = hovered_card {
-                    let (top, extent) = slices.first().copied().unwrap_or((0.0, 0.0));
-                    paint::bands(
+                    let (top, _) = slices.first().copied().unwrap_or((0.0, 0.0));
+                    paint::outline(
                         scene,
-                        &[(cx, cy, cx + cw, cy + chh)],
-                        HOVER,
-                        top,
-                        extent,
-                        0.0,
-                        &frame,
+                        (cx, cy - top + margin, cw, chh),
+                        ink.with_alpha(CARD_HOVER_ALPHA),
+                        2.0,
+                        scale,
                     );
                 }
                 if let Some((cx, cy, cw, chh)) = selected_card {
@@ -2885,7 +2878,7 @@ impl App {
                     paint::outline(
                         scene,
                         (cx, cy - top + margin, cw, chh),
-                        CARD_OUTLINE,
+                        accent,
                         2.0,
                         scale,
                     );
@@ -2912,7 +2905,8 @@ impl App {
                         .and_then(|w| find_by_attr(hud.dom(), 0, "data-hud", w))
                         .and_then(|n| chapter::node_rect(hud.dom(), n))
                     {
-                        paint::wash(scene, rect, HUD_HOVER, ui_scale);
+                        paint::wash(scene, rect, ink.with_alpha(HOVER_FILL_ALPHA), ui_scale);
+                        paint::outline(scene, rect, ink.with_alpha(HOVER_BORDER_ALPHA), 1.0, ui_scale);
                     }
                 }
                 // Last, so the context menu sits over the bars too.
@@ -2923,7 +2917,8 @@ impl App {
                         .and_then(|r| find_by_attr(m.dom(), 0, "data-set", r))
                         .and_then(|n| chapter::node_rect(m.dom(), n))
                     {
-                        paint::wash(scene, rect, MENU_HOVER, ui_scale);
+                        paint::wash(scene, rect, ink.with_alpha(HOVER_FILL_ALPHA), ui_scale);
+                        paint::outline(scene, rect, ink.with_alpha(HOVER_BORDER_ALPHA), 1.0, ui_scale);
                     }
                 }
             }));

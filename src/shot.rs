@@ -137,10 +137,9 @@ pub fn run(args: &[String]) -> i32 {
                 false => format!("{}%", (book.progress(index, within) * 100.0).round() as u8),
             };
 
-            let (_, fg, subtle, panel) = style.chrome();
             chapter::layout_document(
                 hud::html(&book.title, &readout, cols as usize, false, h as f32 / ui, None),
-                hud::stylesheet(&fg, &subtle, &panel),
+                hud::stylesheet(&style.chrome()),
                 None,
                 // The HUD spans the window, not a column.
                 chapter::viewport(w, h, ui, style.dark()),
@@ -233,7 +232,7 @@ pub fn run(args: &[String]) -> i32 {
                     eprintln!("ICONS {icons:?}");
                 }
                 paint::overlay(scene, &mut c.doc, &Frame { scale: ui as f64, ..frame });
-                let ink = crate::parse_hex(&style.chrome().1);
+                let ink = crate::parse_hex(&style.chrome().fg);
                 for (icon, rect) in icons {
                     paint::icon(scene, icon, rect, ink, ui as f64);
                 }
@@ -268,7 +267,7 @@ pub fn run(args: &[String]) -> i32 {
 /// event loop to drain. Layout is what this is for.
 fn library_shot(args: &[String]) -> i32 {
     let [out, rest @ ..] = args else {
-        eprintln!("usage: omaread --shot library <out.ppm> [query]");
+        eprintln!("usage: omaread --shot library <out.ppm> [query] [theme]");
         return 2;
     };
     let query = rest.first().cloned().unwrap_or_default();
@@ -291,11 +290,18 @@ fn library_shot(args: &[String]) -> i32 {
     let style = ReadingStyle::default();
     let margin = PAGE_MARGIN_EM * style.font_px();
     let page_height = (h as f32 - 2.0 * margin).max(1.0);
-    let (bg, fg, subtle, panel) = Theme::White.chrome_colors();
+    // Paper White unless asked, so a shot is the same on any machine; `omarchy`
+    // takes the desktop's palette, as the window does.
+    let theme = rest.get(1).and_then(|a| Theme::named(a)).unwrap_or(Theme::White);
+    let chrome = match theme {
+        Theme::Omarchy => style::omarchy_chrome().unwrap_or_else(|| theme.chrome()),
+        _ => theme.chrome(),
+    };
+    let bg = &chrome.bg;
 
     let Some(mut doc) = chapter::layout_document(
         crate::grid::html(&rows, &query, crate::db::Sort::Recent, &suggestions, None, 0..rows.len()),
-        crate::grid::stylesheet(bg, fg, subtle, panel),
+        crate::grid::stylesheet(&chrome),
         None,
         chapter::viewport(w, h, 1.0, false),
         page_height,
@@ -318,7 +324,7 @@ fn library_shot(args: &[String]) -> i32 {
                 paint::outline(
                     scene,
                     (rect.0, rect.1 + margin, rect.2, rect.3),
-                    crate::CARD_OUTLINE,
+                    crate::parse_hex(&chrome.accent),
                     2.0,
                     1.0,
                 );

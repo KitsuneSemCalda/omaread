@@ -8,6 +8,7 @@
 
 use crate::grid::escape;
 use crate::i18n::tr;
+use crate::style::Chrome;
 
 /// Height of a bar and the window inset, in CSS px. Both bars are in normal
 /// flow, so the bottom one is placed by a computed margin.
@@ -133,7 +134,12 @@ html .figure img {{ display: block; max-width: 96vw; max-height: 96vh; }}
 
 /// The popup's own sheet. Same overlay path as the bars: a document painted
 /// over the page (CONTEXT.md §9), not a second window.
-pub fn note_stylesheet(fg: &str, subtle: &str, panel: &str) -> String {
+///
+/// A square Omarchy panel, but the note is the book's own text, so it stays in
+/// the book's face.
+pub fn note_stylesheet(c: &Chrome) -> String {
+    let Chrome { bg, fg, .. } = c;
+    let border = c.tint(0.4);
     format!(
         r#"
 html {{
@@ -147,9 +153,8 @@ html body {{ margin: 0; padding: 0 6vw; background: transparent; }}
 html .note {{
   margin-top: 26vh;
   padding: 22px 26px;
-  border-radius: 12px;
-  border: 1px solid {subtle};
-  background: {panel};
+  border: 1px solid {border};
+  background: {bg};
   font-size: 17px;
   line-height: 1.5;
   text-align: left;
@@ -163,12 +168,14 @@ html .note {{
 ///
 /// The page shows through, so `html` and `body` must stay transparent — only
 /// the bar itself paints a ground.
-pub fn stylesheet(fg: &str, subtle: &str, panel: &str) -> String {
+pub fn stylesheet(c: &Chrome) -> String {
+    let Chrome { bg, fg, subtle, font, .. } = c;
+    let border = c.tint(0.4);
     format!(
         r#"
 html {{
   box-sizing: border-box;
-  font-family: "Literata", "Charis SIL", serif;
+  font-family: {font};
   background: transparent;
   color: {fg};
 }}
@@ -182,10 +189,10 @@ html .hud {{
      pixels above the plain-text ones. Centring does not care. */
   align-items: center;
   height: {BAR}px;
-  padding: 7px 16px;
-  border-radius: 9px;
-  background: {panel};
-  font-size: 18px;
+  padding: 0 12px;
+  border: 1px solid {border};
+  background: {bg};
+  font-size: 14px;
 }}
 /* The title is the book, so it carries the weight. */
 html .title {{
@@ -200,9 +207,8 @@ html .grow {{ flex-grow: 1; }}
 /* Every control is a click target; `data-hud` is what the window hit-tests. */
 html .btn {{
   color: {subtle};
-  padding: 3px 9px;
+  padding: 4px 9px;
   margin-left: 4px;
-  border-radius: 6px;
   white-space: nowrap;
 }}
 
@@ -265,7 +271,7 @@ mod tests {
         assert!(out.contains("2 col"), "the columns control shows the current state");
         assert!(out.contains("page 8 of 19"));
 
-        let css = stylesheet("#111", "#888", "#eee");
+        let css = stylesheet(&crate::style::Theme::White.chrome());
         assert!(css.contains("html .title {") && css.contains("font-weight: 600;"));
     }
 
@@ -305,7 +311,7 @@ mod tests {
         for icon in ["bookmark", "contents", "highlight", "back"] {
             assert!(out.contains(&format!(r#"data-icon="{icon}""#)), "missing {icon}: {out}");
         }
-        let css = stylesheet("#111", "#888", "#eee");
+        let css = stylesheet(&crate::style::Theme::White.chrome());
         assert!(css.contains("html .ico {"), "the slot needs a size to reserve");
     }
 
@@ -325,7 +331,7 @@ mod tests {
     /// The page has to show through the parts of the overlay that are not bar.
     #[test]
     fn the_overlay_ground_is_transparent() {
-        let css = stylesheet("#111", "#888", "#eee");
+        let css = stylesheet(&crate::style::Theme::White.chrome());
         assert_eq!(css.matches("background: transparent").count(), 2, "html and body");
     }
 }

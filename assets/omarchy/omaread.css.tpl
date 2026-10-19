@@ -12,10 +12,11 @@
  * by default (the "Omarchy" theme, CONTEXT.md §11); White/Sepia/Grey/Night stay
  * one `t` away.
  *
- * Omaread reads exactly these four properties and ignores everything else, so
+ * Omaread reads exactly these five properties and ignores everything else, so
  * it is safe to edit the mappings to taste. `--subtle` is required but not used:
  * Omaread fades `--fg` toward `--bg` instead, because `muted` is illegible as
- * text in several themes.
+ * text in several themes. `--accent` (selection, caret, progress) is optional;
+ * without it Omaread uses Apple's blue.
  */
 
 :root {
@@ -23,4 +24,5 @@
   --fg: {{ foreground }};
   --subtle: {{ muted }};
   --panel: {{ selection }};
+  --accent: {{ accent }};
 }

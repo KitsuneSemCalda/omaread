@@ -56,12 +56,20 @@ impl Theme {
     ///
     /// Off Omarchy this is the reader's own neutral ground; on Omarchy the
     /// chrome uses the rendered palette instead (CONTEXT.md §11).
-    pub fn chrome_colors(self) -> (&'static str, &'static str, &'static str, &'static str) {
-        match self {
+    pub fn chrome(self) -> Chrome {
+        let (bg, fg, subtle, panel) = match self {
             Theme::White => ("#fbfbfd", "#1c1c1e", "#8e8e93", "#ececf0"),
             Theme::Sepia | Theme::Omarchy => ("#f6efe1", "#4f321c", "#96785f", "#e8ddc6"),
             Theme::Grey => ("#d6d6d2", "#33332f", "#6e6e6a", "#c4c4bf"),
             Theme::Night => ("#111113", "#e5e5ea", "#6e6e73", "#232327"),
+        };
+        Chrome {
+            bg: bg.into(),
+            fg: fg.into(),
+            subtle: subtle.into(),
+            panel: panel.into(),
+            accent: APPLE_BLUE.into(),
+            font: BUNDLED_MONO,
         }
     }
 
@@ -106,7 +114,7 @@ impl ReadingStyle {
     /// Page background, for painting the window ground.
     pub fn background_rgb(&self) -> [u8; 3] {
         match self.omarchy_page() {
-            Some((bg, ..)) => hex_rgb(bg),
+            Some(c) => hex_rgb(&c.bg),
             None => self.theme.background_rgb(),
         }
     }
@@ -120,10 +128,7 @@ impl ReadingStyle {
     /// The app chrome palette: Omarchy's when it rendered one, the reading
     /// theme's otherwise. Every chrome surface goes through here.
     pub fn chrome(&self) -> Chrome {
-        self.omarchy.clone().unwrap_or_else(|| {
-            let (bg, fg, subtle, panel) = self.theme.chrome_colors();
-            (bg.into(), fg.into(), subtle.into(), panel.into())
-        })
+        self.omarchy.clone().unwrap_or_else(|| self.theme.chrome())
     }
 
     /// The UA stylesheet for the reading surface.
@@ -134,7 +139,7 @@ impl ReadingStyle {
 /// The descendant prefix raises specificity just enough to win.
     pub fn stylesheet(&self) -> String {
         let (bg, fg, subtle) = match self.omarchy_page() {
-            Some((bg, fg, subtle, _)) => (bg.clone(), fg.clone(), subtle.clone()),
+            Some(c) => (c.bg.clone(), c.fg.clone(), c.subtle.clone()),
             None => {
                 let (bg, fg, subtle) = self.theme.colors();
                 (bg.into(), fg.into(), subtle.into())
@@ -143,14 +148,9 @@ impl ReadingStyle {
         let px = self.font_px();
         let gutter = GUTTER_EM;
         let measure = MEASURE_EM + 2.0 * GUTTER_EM;
-        // On Omarchy, code is set in the desktop's monospace font. Omarchy keeps
-        // it as fontconfig's `monospace` alias (`omarchy-font-set`), which is
-        // what fontique resolves the generic family through. Elsewhere, the
-        // bundled face.
-        let mono = match self.omarchy {
-            Some(_) => "monospace",
-            None => r#""IBM Plex Mono", monospace"#,
-        };
+        // Code is set in the chrome's face: the desktop's monospace on
+        // Omarchy, the bundled one elsewhere (`Chrome::font`).
+        let mono = self.chrome().font;
 
         format!(
             r#"
@@ -359,8 +359,36 @@ fn set_setting_in(path: &std::path::Path, key: &str, value: &str) {
     }
 }
 
-/// App chrome as CSS colour strings: (background, foreground, subtle, panel).
-pub type Chrome = (String, String, String, String);
+/// The accent off Omarchy: the system blue Apple Books uses.
+pub const APPLE_BLUE: &str = "#0a84ff";
+
+/// The chrome face off Omarchy. Bundled, so it is never fontconfig's guess.
+const BUNDLED_MONO: &str = r#""IBM Plex Mono", monospace"#;
+
+/// App chrome: library, contents, HUD, menus. Colours are CSS `#rrggbb`
+/// strings so the stylesheets and the painted overlays cannot drift apart.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chrome {
+    pub bg: String,
+    pub fg: String,
+    pub subtle: String,
+    pub panel: String,
+    /// Selection, caret, progress: the theme's own on Omarchy.
+    pub accent: String,
+    /// Chrome is set in monospace, as Omarchy's own shell is. On Omarchy that
+    /// is fontconfig's `monospace` alias, which `omarchy-font-set` writes and
+    /// fontique resolves the generic family through.
+    pub font: &'static str,
+}
+
+impl Chrome {
+    /// `fg` over `bg` at `alpha`, flattened to an opaque `#rrggbb`. Omarchy's
+    /// control states are foreground tints (`[controls]` in its shell.toml):
+    /// 0.04 at rest, 0.08 hovered, 0.18 selected, 0.4 for a border.
+    pub fn tint(&self, alpha: f32) -> String {
+        mix(&self.fg, &self.bg, alpha)
+    }
+}
 
 /// Where Omarchy leaves the palette it rendered for us.
 const OMARCHY_CSS: &str = ".local/state/omarchy/current/theme/omaread.css";
@@ -375,12 +403,11 @@ const OMARCHY_CSS: &str = ".local/state/omarchy/current/theme/omaread.css";
 pub fn omarchy_chrome() -> Option<Chrome> {
     let home = std::env::var_os("HOME")?;
     let path = std::path::Path::new(&home).join(OMARCHY_CSS);
-    let (bg, fg, _, panel) = parse_chrome(&std::fs::read_to_string(path).ok()?)?;
+    let chrome = parse_chrome(&std::fs::read_to_string(path).ok()?)?;
     // Not the rendered `--subtle`: that is a terminal's `muted`, which several
     // themes put barely off the background (nord, hackerman) — illegible for a
     // HUD label or a caption. Text faded toward the ground reads in all of them.
-    let subtle = mix(&fg, &bg, 0.6);
-    Some((bg, fg, subtle, panel))
+    Some(Chrome { subtle: chrome.tint(0.6), ..chrome })
 }
 
 /// Where `omarchy display text size` keeps the desktop's text size.
@@ -431,11 +458,13 @@ fn mix(a: &str, b: &str, t: f32) -> String {
     format!("#{:02x}{:02x}{:02x}", c(0), c(1), c(2))
 }
 
-/// Pull `--bg`, `--fg`, `--subtle` and `--panel` out of a rendered stylesheet.
+/// Pull `--bg`, `--fg`, `--subtle`, `--panel` and `--accent` out of a rendered
+/// stylesheet.
 ///
 /// Anything not a `#rrggbb` is rejected rather than passed on: a half-rendered
 /// template would otherwise paint the whole library black, since that is what an
-/// unparseable colour becomes.
+/// unparseable colour becomes. `--accent` alone may be missing — a template
+/// installed before it existed — and is then Apple's blue.
 fn parse_chrome(css: &str) -> Option<Chrome> {
     let value = |name: &str| -> Option<String> {
         let key = format!("--{name}:");
@@ -446,7 +475,14 @@ fn parse_chrome(css: &str) -> Option<Chrome> {
             && raw[1..].chars().all(|c| c.is_ascii_hexdigit());
         hex.then(|| raw.to_string())
     };
-    Some((value("bg")?, value("fg")?, value("subtle")?, value("panel")?))
+    Some(Chrome {
+        bg: value("bg")?,
+        fg: value("fg")?,
+        subtle: value("subtle")?,
+        panel: value("panel")?,
+        accent: value("accent").unwrap_or_else(|| APPLE_BLUE.into()),
+        font: "monospace",
+    })
 }
 
 #[cfg(test)]
@@ -489,16 +525,21 @@ mod tests {
     #[test]
     fn the_omarchy_palette_is_read_or_refused() {
         let good = ":root {\n  --bg: #2e3440;\n  --fg: #d8dee9;\n\
-                    --subtle: #4c566a;\n  --panel: #434c5e;\n}\n";
+                    --subtle: #4c566a;\n  --panel: #434c5e;\n  --accent: #81a1c1;\n}\n";
         assert_eq!(
             super::parse_chrome(good),
-            Some((
-                "#2e3440".to_string(),
-                "#d8dee9".to_string(),
-                "#4c566a".to_string(),
-                "#434c5e".to_string(),
-            ))
+            Some(super::Chrome {
+                bg: "#2e3440".into(),
+                fg: "#d8dee9".into(),
+                subtle: "#4c566a".into(),
+                panel: "#434c5e".into(),
+                accent: "#81a1c1".into(),
+                font: "monospace",
+            })
         );
+        // A template rendered before `--accent` existed still works.
+        let old = good.replace("  --accent: #81a1c1;\n", "");
+        assert_eq!(super::parse_chrome(&old).map(|c| c.accent), Some(super::APPLE_BLUE.into()));
 
         // A key that merely starts the same must not be mistaken for `--bg`.
         assert_eq!(super::parse_chrome("--background: #2e3440;"), None);
@@ -557,8 +598,8 @@ mod tests {
     /// and falls back to Sepia off Omarchy rather than painting nothing.
     #[test]
     fn omarchy_theme_paints_the_page_in_the_desktop_palette() {
-        let nord = ("#2e3440".into(), "#d8dee9".into(), "#4c566a".into(), "#434c5e".into());
-        let s = ReadingStyle { theme: Theme::Omarchy, scale: 1.0, omarchy: Some(nord) };
+        let nord = parse_chrome("--bg: #2e3440; --fg: #d8dee9; --subtle: #4c566a; --panel: #434c5e;");
+        let s = ReadingStyle { theme: Theme::Omarchy, scale: 1.0, omarchy: nord };
         let css = s.stylesheet();
         assert!(css.contains("background: #2e3440") && css.contains("color: #d8dee9"));
         assert_eq!(s.background_rgb(), [0x2e, 0x34, 0x40]);
@@ -566,7 +607,7 @@ mod tests {
 
         let paper = ReadingStyle { theme: Theme::Sepia, ..s };
         assert!(!paper.stylesheet().contains("#2e3440"), "a paper theme took the desktop's");
-        assert_eq!(paper.chrome().0, "#2e3440", "chrome stops following Omarchy");
+        assert_eq!(paper.chrome().bg, "#2e3440", "chrome stops following Omarchy");
         assert!(paper.stylesheet().contains("font-family: monospace;"), "desktop mono in any theme");
 
         let off = ReadingStyle { theme: Theme::Omarchy, ..ReadingStyle::default() };
