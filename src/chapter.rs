@@ -1057,6 +1057,43 @@ mod tests {
         assert_eq!(doc.pages.page_containing(bare), 0, "the paragraph starts on page 1");
     }
 
+    /// An image keeps its own size, or shrinks to the column — never grows.
+    /// `display: block` stretched every image to the column's width: SICP's
+    /// 2×9 vertical ellipsis became a blurred slab most of a page tall.
+    #[test]
+    fn images_shrink_to_the_column_but_never_grow() {
+        use blitz_dom::net::Resource;
+        use blitz_dom::util::ImageType;
+        fn img(dom: &blitz_dom::BaseDocument, id: usize, want: &str) -> Option<usize> {
+            let node = dom.get_node(id)?;
+            if node.element_data().is_some_and(|e| e.attr(blitz_dom::local_name!("id")) == Some(want)) {
+                return Some(id);
+            }
+            node.children.iter().find_map(|c| img(dom, *c, want))
+        }
+
+        let vp = || super::viewport(900, 1000, 1.0, false);
+        let mut doc = super::layout_document(
+            r#"<html><body><p>a <img id="dots"/> b</p><div><img id="wide"/></div></body></html>"#.into(),
+            crate::style::ReadingStyle::default().stylesheet(),
+            None,
+            vp(),
+            900.0,
+        )
+        .expect("the page must lay out");
+        let (dots, wide) = (img(doc.dom(), 0, "dots").unwrap(), img(doc.dom(), 0, "wide").unwrap());
+        for (id, w, h) in [(dots, 2, 9), (wide, 2000, 800)] {
+            let rgba = std::sync::Arc::new(vec![0u8; (w * h * 4) as usize]);
+            doc.doc.load_resource(Resource::Image(id, ImageType::Image, w, h, rgba));
+        }
+        super::relayout(&mut doc, vp(), 900.0);
+
+        let (_, _, w, h) = super::node_rect(doc.dom(), dots).unwrap();
+        assert_eq!((w, h), (2.0, 9.0), "a small image was stretched");
+        let (_, _, w, h) = super::node_rect(doc.dom(), wide).unwrap();
+        assert!(w < 900.0 && (h / w - 0.4).abs() < 0.01, "a wide image must fit, in proportion: {w}×{h}");
+    }
+
     /// A cover that reaches the engine as an empty tree gets the book's name; a
     /// cover that actually paints must keep its image.
     #[test]

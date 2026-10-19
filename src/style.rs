@@ -234,7 +234,10 @@ code {{ font-size: 0.9em; }}
 
 html img,
 html svg {{
-  display: block;
+  /* Not block: blitz stretches a block image to the column, so a 2×9 glyph
+     image fills a page. A table box is centred by auto margins and keeps
+     the image's own size. */
+  display: table;
   margin: 1.2em auto;
   max-width: 100%;
   max-height: 85vh;
