@@ -165,6 +165,30 @@ mod tests {
         assert_eq!(super::ride_along(16, 0..15, 15..30), 16, "already there");
     }
 
+    /// Calibre's notes, from Postman's *Divertirse hasta morir*: the id is on
+    /// the `<small>` marker, not the note. A marker opening its paragraph stands
+    /// for the note; the back-link's target, closing a body paragraph, is a
+    /// place and must not pop the paragraph up as a note.
+    #[test]
+    fn a_marker_opening_a_paragraph_stands_for_the_note() {
+        let body = r#"<p>al decir: «El daguerrotipo no es un mero instrumento».<sup><small id="ref">
+            <a href="n.html#note"><span>[4]</span></a></small></sup></p>
+            <p><sup><small id="note"><span>[4]</span></small></sup> Sontag, p. 165. <a href="c.html#ref">&lt;&lt;</a></p>"#;
+        let doc = crate::chapter::layout_fragment(
+            body,
+            &crate::style::ReadingStyle::default(),
+            crate::chapter::viewport(900, 700, 1.0, false),
+        );
+        let dom: &blitz_dom::BaseDocument = &doc;
+        let note = super::find_by_attr(dom, 0, "id", "note").unwrap();
+        let opened = super::note_of_marker(dom, note);
+        assert_eq!(crate::chapter::tag_of(dom, opened).as_deref(), Some("p"));
+        assert!(crate::chapter::text_of(dom, opened).contains("Sontag, p. 165"));
+
+        let back = super::find_by_attr(dom, 0, "id", "ref").unwrap();
+        assert_eq!(super::note_of_marker(dom, back), back, "a place, not a note");
+    }
+
     /// A superscript note reference is a ten-pixel target inside a sentence.
     /// Landing beside it has to count, or footnotes are unopenable.
     #[test]
@@ -1859,6 +1883,7 @@ impl App {
             }
         };
         let node = find_by_attr(ch.dom(), 0, "id", frag)?;
+        let node = note_of_marker(ch.dom(), node);
         let tag = chapter::tag_of(ch.dom(), node)?;
         let text = chapter::text_of(ch.dom(), node);
         (is_note(&tag, &text) && !chapter::has_heading(ch.dom(), node)).then_some(text)
@@ -3862,6 +3887,25 @@ fn href_at(doc: &blitz_html::HtmlDocument, x: f32, y: f32) -> Option<String> {
 ///
 /// ponytail: length and headings. Key on `epub:type`/`role` as well if a real
 /// book gets it wrong.
+/// The paragraph a target stands for, when the target is the marker that opens
+/// it: Calibre puts the id on `<small>[4]</small>` at the start of the note,
+/// not on the note. An inline anywhere else in its paragraph is a place in the
+/// text, like the back-link's target at the end of the paragraph that cites
+/// the note.
+fn note_of_marker(dom: &blitz_dom::BaseDocument, target: usize) -> usize {
+    let Some(node) = dom.get_node(target) else { return target };
+    match node.parent.and_then(|p| chapter::text_element(dom, p)) {
+        Some(b) => {
+            // From the DOM: an inline has no text layout of its own to read.
+            let marker = node.text_content();
+            let opens = !marker.trim().is_empty()
+                && chapter::text_of(dom, b).trim_start().starts_with(marker.trim());
+            if opens { b } else { target }
+        }
+        None => target,
+    }
+}
+
 fn is_note(tag: &str, text: &str) -> bool {
     const NOTE_MAX: usize = 5000;
     matches!(tag, "p" | "li" | "aside" | "div" | "span" | "td")

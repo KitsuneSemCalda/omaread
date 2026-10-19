@@ -584,6 +584,12 @@ pub fn layout_fragment(body: &str, style: &ReadingStyle, viewport: Viewport) -> 
 }
 
 /// Absolute Y of a node in the flow, for resolving a CFI back to a page.
+///
+/// An inline element has no box of its own inside its paragraph's text
+/// layout, so its `final_layout` says nothing about where it is. Its top is the
+/// first line that draws its text: a note's `<small id>` back-link target sits
+/// pages below the top of a long paragraph, and landing on that top looked like
+/// following the link to the wrong page.
 pub fn node_top(dom: &BaseDocument, target: usize) -> Option<f32> {
     fn walk(dom: &BaseDocument, id: usize, y: f32, target: usize) -> Option<f32> {
         let node = dom.get_node(id)?;
@@ -593,7 +599,33 @@ pub fn node_top(dom: &BaseDocument, target: usize) -> Option<f32> {
         }
         node.children.iter().find_map(|c| walk(dom, *c, at, target))
     }
-    walk(dom, 0, 0.0, target)
+    let block = dom.get_node(target)?.parent.and_then(|p| text_element(dom, p));
+    match block.and_then(|b| inline_top(dom, b, target)) {
+        Some(y) => Some(y),
+        None => walk(dom, 0, 0.0, target),
+    }
+}
+
+/// Top of the first line of `block`'s layout drawing text from `target` or
+/// one of its descendants. `None` when it draws none, an empty anchor say.
+fn inline_top(dom: &BaseDocument, block: usize, target: usize) -> Option<f32> {
+    use parley::PositionedLayoutItem;
+    let tl = text_layout(dom, block)?;
+    let within = |mut id: usize| loop {
+        if id == target {
+            return true;
+        }
+        match dom.get_node(id).and_then(|n| n.parent) {
+            Some(p) if id != block => id = p,
+            _ => return false,
+        }
+    };
+    let line = tl.layout.lines().find(|line| {
+        line.items().any(|i| matches!(i, PositionedLayoutItem::GlyphRun(g) if within(g.style().brush.id)))
+    })?;
+    let l = &dom.get_node(block)?.final_layout;
+    let content_top = node_top(dom, block)? + l.border.top + l.padding.top;
+    Some(content_top + line.metrics().min_coord / tl.layout.scale())
 }
 
 /// Every `data-index` element with its absolute top, in one walk.
@@ -1326,6 +1358,24 @@ mod tests {
         assert_eq!(b.2, "extraordinarily");
         assert_eq!(highlight_rects(&plain, p0, a.0, a.1).len(), highlight_rects(&marked, p1, b.0, b.1).len());
         assert!(!highlight_rects(&marked, p1, b.0, b.1).is_empty());
+    }
+
+    /// A link target on an inline element is where its text is, not at the
+    /// top of its paragraph: a note's back-link pointed at a `<small id>` at the
+    /// end of a long paragraph and landed a page early.
+    #[test]
+    fn an_inline_target_is_found_on_its_own_line() {
+        let words = "palabra ".repeat(400);
+        let body = format!(r#"<p>{words}<sup><small id="r4">[4]</small></sup></p>"#);
+        let doc = layout_fragment(&body, &ReadingStyle::default(), viewport(400, 1000, 1.0, false));
+        let p = node_containing_text(&doc, "palabra").unwrap();
+        let small = (0..10_000).find(|&i| tag_of(&doc, i).as_deref() == Some("small")).unwrap();
+        let (para, at) = (node_top(&doc, p).unwrap(), node_top(&doc, small).unwrap());
+        let bottom = para + node_rect(&doc, p).unwrap().3;
+        assert!(at > para + 1000.0, "landed at {at}, paragraph starts at {para}");
+        assert!(at < bottom, "past the paragraph: {at} >= {bottom}");
+        // A block keeps its own box.
+        assert_eq!(node_top(&doc, p), Some(para));
     }
 
     #[test]
