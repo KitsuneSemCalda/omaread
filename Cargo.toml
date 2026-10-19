@@ -2,6 +2,9 @@
 name = "omaread"
 version = "0.1.0"
 edition = "2024"
+description = "An EPUB, AZW3 and MOBI reader for Wayland, made for Omarchy"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/danielgccr/omaread"
 
 [dependencies]
 # Screen-reader support (CONTEXT.md §7): the tree types, and the winit adapter

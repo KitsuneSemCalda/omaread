@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Omaread
+GenericName=E-book Reader
+Comment=Read EPUB, AZW3 and MOBI books
+Exec=omaread %f
+Icon=accessories-ebook-reader
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/epub+zip;application/x-mobipocket-ebook;application/vnd.amazon.mobi8-ebook;
+Keywords=book;ebook;epub;mobi;azw3;kindle;reader;
+StartupWMClass=omaread

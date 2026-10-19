@@ -1207,7 +1207,10 @@ integration degrades to a sensible default elsewhere.
 
 ## 12. Packaging and platform
 
-- AUR first; Flatpak at 1.0.
+- AUR first; Flatpak at 1.0. The AUR package is `omaread-git`
+  (`packaging/aur/PKGBUILD`), built from `master`: there are no tags to build a
+  versioned one from. It installs the binary, a `.desktop` entry, and the two
+  Omarchy files under `/usr/share/omaread/omarchy/` for the user to copy.
 - Design for the sandbox from day one: XDG base directories everywhere, zero
   hardcoded paths, file dialogs through `xdg-desktop-portal`.
   Retrofitting this is miserable, and it is the same discipline that makes watched
