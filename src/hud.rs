@@ -107,6 +107,30 @@ pub fn note_html(text: &str) -> String {
     format!(r#"<!DOCTYPE html><html><body><div class="note">{}</div></body></html>"#, escape(text))
 }
 
+/// A figure on its own, over the page. `src` is already absolute.
+pub fn figure_html(src: &str) -> String {
+    format!(r#"<!DOCTYPE html><html><body><div class="figure"><img src="{}"/></div></body></html>"#, escape(src))
+}
+
+/// The figure fills the window on the page's own ground: natural size, or
+/// scaled down to fit, never up.
+pub fn figure_stylesheet(ground: &str) -> String {
+    format!(
+        r#"
+html {{ background: {ground}; }}
+html body {{
+  margin: 0;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: {ground};
+}}
+html .figure img {{ display: block; max-width: 96vw; max-height: 96vh; }}
+"#
+    )
+}
+
 /// The popup's own sheet. Same overlay path as the bars: a document painted
 /// over the page (CONTEXT.md §9), not a second window.
 pub fn note_stylesheet(fg: &str, subtle: &str, panel: &str) -> String {

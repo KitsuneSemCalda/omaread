@@ -751,8 +751,9 @@ pub fn selection_rects(
         .collect()
 }
 
-/// Rectangles for a stored highlight: a character offset and length inside one
-/// element, converted back to the byte range parley works in.
+/// Rectangles for a stored highlight: a character offset inside one element and
+/// a length that runs on into the elements after it, converted back to the byte
+/// ranges parley works in.
 ///
 /// Offsets are stored as *visible characters* (`visible_count`) because that is
 /// what a CFI means by `:offset`; parley counts bytes, soft hyphens included.
@@ -764,16 +765,67 @@ pub fn highlight_rects(
     char_start: usize,
     char_len: usize,
 ) -> Vec<(f32, f32, f32, f32)> {
+    let els = text_elements(dom);
+    let Some(i) = els.iter().position(|&e| e == id) else { return Vec::new() };
+    let (mut start, mut left, mut out) = (char_start, char_len, Vec::new());
+    for &e in &els[i..] {
+        let Some(tl) = text_layout(dom, e) else { continue };
+        let n = visible_count(&tl.text);
+        if left == 0 || start > n {
+            break;
+        }
+        let take = left.min(n - start);
+        let bytes = byte_of_visible(&tl.text, start)..byte_of_visible(&tl.text, start + take);
+        out.extend(range_rects(dom, e, bytes));
+        (start, left) = (0, left - take);
+    }
+    out
+}
+
+/// Rectangles over a byte range of one element's text.
+pub fn range_rects(dom: &BaseDocument, id: usize, bytes: std::ops::Range<usize>) -> Vec<(f32, f32, f32, f32)> {
     let Some(tl) = text_layout(dom, id) else { return Vec::new() };
-    let (b0, b1) = (byte_of_visible(&tl.text, char_start), byte_of_visible(&tl.text, char_start + char_len));
-    if b1 <= b0 {
+    if bytes.is_empty() {
         return Vec::new();
     }
     let sel = parley::Selection::new(
-        parley::Cursor::from_byte_index(&tl.layout, b0, parley::Affinity::Downstream),
-        parley::Cursor::from_byte_index(&tl.layout, b1, parley::Affinity::Upstream),
+        parley::Cursor::from_byte_index(&tl.layout, bytes.start, parley::Affinity::Downstream),
+        parley::Cursor::from_byte_index(&tl.layout, bytes.end, parley::Affinity::Upstream),
     );
     selection_rects(dom, id, &sel)
+}
+
+/// Every element that owns an inline layout, in reading order: the paragraphs a
+/// selection or a highlight runs across.
+pub fn text_elements(dom: &BaseDocument) -> Vec<usize> {
+    let mut out = Vec::new();
+    walk_elements(dom, 0, &mut |id, el| {
+        if el.inline_layout_data.is_some() {
+            out.push(id);
+        }
+    });
+    out
+}
+
+/// The text between two points, `(element, byte)`, given in either order, as a
+/// byte range per element: a selection dragged across paragraphs.
+pub fn ranges_between(
+    dom: &BaseDocument,
+    a: (usize, usize),
+    b: (usize, usize),
+) -> Vec<(usize, std::ops::Range<usize>)> {
+    let els = text_elements(dom);
+    let at = |p: (usize, usize)| els.iter().position(|&e| e == p.0).map(|i| (i, p.1));
+    let (Some(a), Some(b)) = (at(a), at(b)) else { return Vec::new() };
+    let (first, last) = (a.min(b), a.max(b));
+    (first.0..=last.0)
+        .filter_map(|i| {
+            let len = text_layout(dom, els[i])?.text.len();
+            let start = if i == first.0 { first.1 } else { 0 };
+            let end = if i == last.0 { last.1 } else { len };
+            (start < end).then(|| (els[i], start..end))
+        })
+        .collect()
 }
 
 /// Character offset and count for a byte range in an element's text, plus the
@@ -1190,6 +1242,26 @@ mod tests {
         assert_eq!(b.2, "extraordinarily");
         assert_eq!(highlight_rects(&plain, p0, a.0, a.1).len(), highlight_rects(&marked, p1, b.0, b.1).len());
         assert!(!highlight_rects(&marked, p1, b.0, b.1).is_empty());
+    }
+
+    #[test]
+    fn a_selection_runs_across_paragraphs() {
+        let body = "<p>First paragraph.</p><p>Middle one.</p><p>Last paragraph.</p>";
+        let doc = layout_fragment(body, &ReadingStyle::default(), viewport(760, 1000, 1.0, false));
+        let p = |t| node_containing_text(&doc, t).unwrap();
+        let (a, m, z) = (p("First"), p("Middle"), p("Last"));
+
+        // "paragraph." … "Last", dragged down or up: the same three pieces.
+        let down = ranges_between(&doc, (a, 6), (z, 4));
+        assert_eq!(down, ranges_between(&doc, (z, 4), (a, 6)));
+        let texts: Vec<_> = down.iter().map(|(id, r)| char_span(&doc, *id, r.clone()).unwrap().2).collect();
+        assert_eq!(texts, ["paragraph.", "Middle one.", "Last"]);
+        assert_eq!(down[1].0, m);
+
+        // A highlight stored as one offset and length paints all three.
+        let one = highlight_rects(&doc, a, 6, 10).len();
+        assert_eq!(highlight_rects(&doc, a, 6, 10 + 11 + 4).len(), one * 3);
+        assert!(highlight_rects(&doc, a, 99, 4).is_empty(), "an offset past the end paints nothing");
     }
 
     #[test]

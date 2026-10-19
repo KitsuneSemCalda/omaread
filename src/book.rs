@@ -52,6 +52,10 @@ pub struct Book {
     pub author: String,
     /// `dc:language`, used to pick hyphenation patterns.
     pub language: String,
+    /// Laid out by the publisher page by page — comics, picture books
+    /// (`rendition:layout` pre-paginated, or KF8's fixed-layout flag). Read
+    /// through the reflowing paginator all the same, so the reader is told.
+    pub fixed_layout: bool,
     /// Flattened navigation, in document order. Never empty — see `read_toc`.
     pub toc: Arc<Vec<TocEntry>>,
     /// Cumulative byte length of the spine items, with the total at the end, so
@@ -98,7 +102,13 @@ impl Book {
         }
 
         let toc = read_toc(&epub, &spine);
-        Ok(Self::assemble(Source::Epub(Mutex::new(epub)), spine, title, author, language, toc))
+        let fixed = epub
+            .metadata()
+            .by_property("rendition:layout")
+            .any(|e| e.value().trim() == "pre-paginated");
+        let mut book = Self::assemble(Source::Epub(Mutex::new(epub)), spine, title, author, language, toc);
+        book.fixed_layout = fixed;
+        Ok(book)
     }
 
     fn open_mobi(path: &Path) -> Result<Self, String> {
@@ -127,7 +137,9 @@ impl Book {
             .collect();
         let title = Some(m.title).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| stem(path));
         let toc = finish_toc(toc, m.spine.len());
-        Ok(Self::assemble(Source::Mobi(m.files), m.spine, title, m.author, m.language, toc))
+        let mut book = Self::assemble(Source::Mobi(m.files), m.spine, title, m.author, m.language, toc);
+        book.fixed_layout = m.fixed_layout;
+        Ok(book)
     }
 
     fn assemble(
@@ -144,6 +156,7 @@ impl Book {
             title,
             author,
             language,
+            fixed_layout: false,
             toc: Arc::new(toc),
             offsets: Arc::new(Vec::new()),
         };

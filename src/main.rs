@@ -47,6 +47,9 @@ use winit::window::{Window, WindowId};
 /// through; the selection is the same idea in the system's blue.
 pub const HIGHLIGHT: Color = Color::from_rgba8(0xff, 0xd6, 0x2e, 0x66);
 const SELECTION: Color = Color::from_rgba8(0x0a, 0x84, 0xff, 0x40);
+/// The underline that says a highlight carries a note: the highlighter's own
+/// amber, opaque, so it reads on every theme.
+const NOTED: Color = Color::from_rgb8(0xe0, 0x9a, 0x00);
 /// The library's selected card, outlined rather than filled so the cover shows.
 pub const CARD_OUTLINE: Color = Color::from_rgb8(0x0a, 0x84, 0xff);
 /// The card under the pointer. Light enough to read the cover through.
@@ -553,9 +556,15 @@ struct App {
     toc_mode: TocMode,
     /// Marks for the open book; index-aligned with the list while in Marks mode.
     marks: Vec<db::Mark>,
-    /// Live selection: the element it lives in, and parley's selection over it.
-    sel: Option<(usize, parley::Selection)>,
+    /// Live selection, anchor then focus, each as (text element, byte). The two
+    /// may sit in different paragraphs.
+    sel: Option<((usize, usize), (usize, usize))>,
     dragging: bool,
+    /// Where the last press on the page landed, in physical pixels. A release
+    /// near it is a click: open the figure or the note under it.
+    press_at: Option<(f32, f32)>,
+    /// An off-book link the popup is asking about: Enter opens it.
+    leaving: Option<String>,
     /// Mark being annotated, and the note as typed so far.
     noting: Option<i64>,
     note: String,
@@ -694,6 +703,8 @@ impl App {
             scale: 1.0,
             ui: style::omarchy_ui_scale(),
             cursor: (0.0, 0.0),
+            press_at: None,
+            leaving: None,
         };
 
         println!(
@@ -816,6 +827,11 @@ impl App {
         // an illustrated book is a wasted 120ms.
         if self.window.is_some() {
             self.load_chapter(start);
+        }
+        // Reflowing a book laid out page by page cannot look as designed; say
+        // so, once per opening, rather than let it look broken.
+        if self.book.as_ref().is_some_and(|b| b.fixed_layout) {
+            self.open_note(&i18n::tr!("fixed-layout-notice"));
         }
         self.request_redraw();
     }
@@ -985,27 +1001,35 @@ impl App {
         }
     }
 
-    /// The selection as (element, byte range).
-    fn selected(&self) -> Option<(usize, std::ops::Range<usize>)> {
-        let (node, sel) = self.sel.as_ref()?;
-        let range = sel.text_range();
-        (!range.is_empty()).then(|| (*node, range))
+    /// The selection as (element, byte range), one per paragraph it covers.
+    fn selected(&self) -> Option<Vec<(usize, std::ops::Range<usize>)>> {
+        let (a, f) = self.sel?;
+        let ranges = chapter::ranges_between(self.chapter.as_ref()?.dom(), a, f);
+        (!ranges.is_empty()).then_some(ranges)
+    }
+
+    /// The selection's first element, its character offset there, its length
+    /// in characters across every paragraph, and its text, a paragraph a line.
+    fn selected_span(&self) -> Option<(usize, usize, usize, String)> {
+        let ranges = self.selected()?;
+        let dom = self.chapter.as_ref()?.dom();
+        let spans: Vec<_> = ranges.iter().filter_map(|(id, r)| chapter::char_span(dom, *id, r.clone())).collect();
+        let first = spans.first()?;
+        let text: Vec<&str> = spans.iter().map(|s| s.2.as_str()).collect();
+        Some((ranges[0].0, first.0, spans.iter().map(|s| s.1).sum(), text.join("\n")))
     }
 
     fn selected_text(&self) -> Option<String> {
-        let (node, range) = self.selected()?;
-        let ch = self.chapter.as_ref()?;
-        chapter::char_span(ch.dom(), node, range).map(|(_, _, text)| text)
+        self.selected_span().map(|s| s.3)
     }
 
     /// Returns the new mark's `(cfi, length)`, which is what identifies it.
     fn highlight_selection(&mut self) -> Option<(String, usize)> {
-        let Some((node, range)) = self.selected() else {
-            println!("omaread: nothing selected — drag across a paragraph first");
+        let Some((node, start, len, text)) = self.selected_span() else {
+            println!("omaread: nothing selected — drag across the text first");
             return None;
         };
         let ch = self.chapter.as_ref()?;
-        let (start, len, text) = chapter::char_span(ch.dom(), node, range)?;
         let mut cfi = cfi::of_node(ch.dom(), node, self.index)?;
         cfi.offset = Some(start);
 
@@ -1099,31 +1123,88 @@ impl App {
     /// and every stored highlight in this chapter.
     fn selection_rects(&self) -> Vec<(f32, f32, f32, f32)> {
         let Some(ch) = self.chapter.as_ref() else { return Vec::new() };
-        match &self.sel {
-            Some((node, sel)) => chapter::selection_rects(ch.dom(), *node, sel),
-            None => Vec::new(),
-        }
+        let ranges = self.selected().unwrap_or_default();
+        ranges.into_iter().flat_map(|(id, r)| chapter::range_rects(ch.dom(), id, r)).collect()
     }
 
     /// ponytail: re-queried every frame. It is one indexed read on a WAL
     /// database and only matters while dragging; cache per chapter if a profile
     /// ever shows it.
-    fn highlight_rects(&self) -> Vec<(f32, f32, f32, f32)> {
+    ///
+    /// Returns the highlights, and an underline along the foot of each one that
+    /// carries a note — the mark that says a click will show it.
+    #[allow(clippy::type_complexity)]
+    fn highlight_rects(&self) -> (Vec<(f32, f32, f32, f32)>, Vec<(f32, f32, f32, f32)>) {
         let (Some(ch), Some(db)) = (
             self.chapter.as_ref(),
             self.db.as_ref().and_then(|d| d.lock().ok()),
         ) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
+        let (mut all, mut noted) = (Vec::new(), Vec::new());
+        for m in db.marks_in(&self.hash, self.index) {
+            let Some(c) = cfi::Cfi::parse(&m.cfi) else { continue };
+            let Some(node) = cfi::resolve(ch.dom(), &c) else { continue };
+            let rects = chapter::highlight_rects(ch.dom(), node, c.offset.unwrap_or(0), m.length);
+            if !m.note.is_empty() {
+                noted.extend(rects.iter().map(|&(x0, _, x1, y1)| (x0, y1 - 2.0, x1, y1)));
+            }
+            all.extend(rects);
+        }
+        (all, noted)
+    }
+
+    /// The note on a stored highlight, if it has one.
+    fn mark_note(&self, id: i64) -> Option<String> {
+        let db = self.db.as_ref()?.lock().ok()?;
         db.marks_in(&self.hash, self.index)
-            .iter()
-            .filter_map(|m| {
-                let c = cfi::Cfi::parse(&m.cfi)?;
-                let node = cfi::resolve(ch.dom(), &c)?;
-                Some(chapter::highlight_rects(ch.dom(), node, c.offset?, m.length))
-            })
-            .flatten()
-            .collect()
+            .into_iter()
+            .find(|m| m.id == id && !m.note.is_empty())
+            .map(|m| m.note)
+    }
+
+    /// The figure under the pointer, as an in-archive path.
+    fn figure_at(&self) -> Option<String> {
+        let ch = self.chapter.as_ref()?;
+        let (fx, fy) = self.pointer_in_flow();
+        let hit = ch.doc.hit(fx, fy)?;
+        if chapter::tag_of(ch.dom(), hit.node_id)? != "img" {
+            return None;
+        }
+        let src = ancestor_attr(ch.dom(), hit.node_id, "src")?;
+        let here = self.book.as_ref()?.chapter_href(self.index)?.to_string();
+        let dir = here.rsplit_once('/').map_or("", |(d, _)| d);
+        net::in_archive_path(&format!("{dir}/{src}"))
+    }
+
+    /// A figure on its own, as large as the window allows and never larger than
+    /// it is: the page caps images at 85vh, and a technical figure needs more.
+    /// It is the popup, so the next click or key puts it away.
+    fn open_figure(&mut self, href: &str) {
+        let Some(book) = self.book.clone() else { return };
+        // The book's provider answers synchronously, so the image is in hand
+        // once the document is built; no trip through the event loop.
+        let (tx, rx) = channel();
+        let provider: Arc<dyn blitz_traits::net::NetProvider<Resource>> =
+            Arc::new(net::BookNetProvider::new(book, Arc::new(ChannelCallback(tx))));
+        let (bg, ..) = self.chrome();
+        let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
+        let src = format!("{}{}", net::ORIGIN, href.trim_start_matches('/'));
+        let Some(mut fig) = chapter::layout_document(
+            hud::figure_html(&src),
+            hud::figure_stylesheet(&bg),
+            Some(provider),
+            vp.clone(),
+            self.page_height(),
+        ) else {
+            return;
+        };
+        for r in rx.try_iter() {
+            fig.doc.load_resource(r);
+        }
+        chapter::relayout(&mut fig, vp, self.page_height());
+        self.popup = Some(fig);
+        self.request_redraw();
     }
 
     /// Begin a selection at the pointer. Coordinates arrive in physical pixels.
@@ -1136,35 +1217,26 @@ impl App {
             self.request_redraw();
             return;
         };
-        let (node, x, y) = local;
-        let Some(ch) = self.chapter.as_ref() else { return };
-        let Some(tl) = chapter::text_layout(ch.dom(), node) else { return };
-        let s = tl.layout.scale();
-        self.sel = Some((node, parley::Selection::from_point(&tl.layout, x * s, y * s)));
+        let Some(at) = self.text_point(local) else { return };
+        self.sel = Some((at, at));
         self.dragging = true;
     }
 
-    /// Extend the selection. The anchor's element is kept: a selection lives in
-    /// one parley layout.
-    ///
-    /// ponytail: one paragraph at a time. Selecting across paragraphs means
-    /// stitching several layouts and is a bigger job than it looks; parley
-    /// clamps a drag past the end, so dragging down selects to the paragraph's
-    /// end rather than doing nothing.
+    /// Move the selection's focus to the text under the pointer, in whatever
+    /// paragraph that is. Between paragraphs, or in the margin, it stays where
+    /// it was.
     fn extend_selection(&mut self) {
-        let Some((node, sel)) = self.sel.take() else { return };
-        let Some(ch) = self.chapter.as_ref() else { return };
-        let (Some(tl), Some((ox, oy))) = (
-            chapter::text_layout(ch.dom(), node),
-            chapter::node_origin(ch.dom(), node),
-        ) else {
-            return;
-        };
-        let (fx, fy) = self.pointer_in_flow();
-        let s = tl.layout.scale();
-        let next = sel.extend_to_point(&tl.layout, (fx - ox) * s, (fy - oy) * s);
-        self.sel = Some((node, next));
+        let Some((anchor, _)) = self.sel else { return };
+        let Some(focus) = self.pointer_in_text().and_then(|l| self.text_point(l)) else { return };
+        self.sel = Some((anchor, focus));
         self.request_redraw();
+    }
+
+    /// The byte a point local to a text element falls on.
+    fn text_point(&self, (node, x, y): (usize, f32, f32)) -> Option<(usize, usize)> {
+        let tl = chapter::text_layout(self.chapter.as_ref()?.dom(), node)?;
+        let s = tl.layout.scale();
+        Some((node, parley::Cursor::from_point(&tl.layout, x * s, y * s).index()))
     }
 
     /// Pointer position in flow coordinates (CSS pixels into the chapter).
@@ -1428,6 +1500,7 @@ impl App {
         }
         // A popup takes the next click, whatever it lands on.
         if self.popup.take().is_some() {
+            self.leaving = None;
             self.request_redraw();
             return true;
         }
@@ -1439,9 +1512,15 @@ impl App {
                 None => return false,
             }
         };
-        // Off-book links are §3's confirm-then-xdg-open, which is not built:
-        // better to do nothing than to open a browser without asking.
-        if href.contains("://") || href.starts_with("mailto:") {
+        // Off-book links (§5): show where it really goes, and leave only on
+        // Enter. Web and mail only; a file:// or a custom scheme hands the
+        // desktop more than a book should.
+        if ["http://", "https://", "mailto:"].iter().any(|p| href.starts_with(p)) {
+            self.open_note(&i18n::tr!("link-leave", url = href.as_str()));
+            self.leaving = Some(href);
+            return true;
+        }
+        if href.contains("://") {
             eprintln!("omaread: external link {href} (not opened)");
             return true;
         }
@@ -1981,7 +2060,9 @@ impl App {
                     t.focus(T::Page(key));
                 }
                 if let Some(note) = &self.popup {
-                    t.add(T::Root, T::Note, Role::Dialog, &chapter::text_of(note.dom(), 0));
+                    let text = chapter::text_of(note.dom(), 0);
+                    let label = if text.is_empty() { i18n::tr!("a11y-figure") } else { text };
+                    t.add(T::Root, T::Note, Role::Dialog, &label);
                     t.focus(T::Note);
                 }
             }
@@ -2290,7 +2371,7 @@ impl App {
     fn drop_chrome(&mut self) {
         self.hud_doc = None;
         self.menu = None;
-        self.popup = None;
+        self.relay_popup();
     }
 
     /// The pointer in chrome CSS pixels.
@@ -2511,9 +2592,19 @@ impl App {
         self.request_redraw();
     }
 
+    /// A popup laid out for a window that is gone. A note is text, so it is
+    /// laid out again at the new size — the fixed-layout notice arrives just as
+    /// Hyprland rescales a new window, and was lost to that. A figure goes; it
+    /// comes back on the next click.
+    fn relay_popup(&mut self) {
+        let note = self.popup.take().map(|p| chapter::text_of(p.dom(), 0));
+        if let Some(text) = note.filter(|t| !t.is_empty()) {
+            self.open_note(&text);
+        }
+    }
+
     fn relayout(&mut self) {
-        // Laid out for the old window; it comes back on the next click.
-        self.popup = None;
+        self.relay_popup();
         if self.view != View::Reading {
             let vp = self.viewport();
             let ph = self.page_height();
@@ -2644,9 +2735,9 @@ impl App {
         let cols = self.effective_columns();
         // Both borrow self immutably, so they cannot wait until after the
         // disjoint-field destructure below.
-        let (highlights, selection) = match self.view {
+        let ((highlights, noted), selection) = match self.view {
             View::Reading => (self.highlight_rects(), self.selection_rects()),
-            _ => (Vec::new(), Vec::new()),
+            _ => ((Vec::new(), Vec::new()), Vec::new()),
         };
         // The library's selection is painted, so arrow keys cost a frame instead
         // of a rebuild — a rebuild re-requests every cover.
@@ -2770,6 +2861,7 @@ impl App {
                     }
                     paint::column(scene, doc, top, extent, x, col_w, &frame, ground, col == 0);
                     paint::bands(scene, &highlights, HIGHLIGHT, top, extent, x, &frame);
+                    paint::bands(scene, &noted, NOTED, top, extent, x, &frame);
                     paint::bands(scene, &selection, SELECTION, top, extent, x, &frame);
                 }
                 }
@@ -2844,7 +2936,13 @@ impl App {
 
     fn on_key(&mut self, event_loop: &ActiveEventLoop, key: Key) {
         // A note is read and dismissed; nothing else happens while it is up.
+        // Unless it asked about a link, and the key is Enter.
         if self.popup.take().is_some() {
+            if let Some(url) = self.leaving.take()
+                && key == Key::Named(NamedKey::Enter)
+            {
+                open_url(&url);
+            }
             self.request_redraw();
             return;
         }
@@ -3242,6 +3340,15 @@ impl App {
     }
 }
 
+/// Hand a link to the desktop's browser or mail client. Reaped on a thread so
+/// it leaves no zombie behind.
+fn open_url(url: &str) {
+    match std::process::Command::new("xdg-open").arg(url).spawn() {
+        Ok(mut child) => drop(std::thread::spawn(move || child.wait())),
+        Err(e) => eprintln!("omaread: could not run xdg-open ({e})"),
+    }
+}
+
 /// The `href` under a point in the flow, or within a few pixels of it.
 ///
 /// A note reference is a superscript digit — a 10px target in a 660px measure,
@@ -3500,19 +3607,31 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
                         // The HUD is on top of the page, so it gets the click,
                         // then a link, and only then does the page take it.
                         if !self.hud_action() && !self.link_action() {
+                            self.press_at = Some(self.cursor);
                             self.begin_selection();
                         }
                     }
                     ElementState::Pressed => self.on_click(),
                     ElementState::Released => {
                         let dragged = std::mem::take(&mut self.dragging);
+                        let (px, py) = self.press_at.take().unwrap_or((f32::MAX, f32::MAX));
+                        let click = (px - self.cursor.0).abs() < 5.0 && (py - self.cursor.1).abs() < 5.0;
                         // A press with no drag is a click, not a selection.
-                        if self.sel.as_ref().is_some_and(|(_, s)| s.is_collapsed()) {
+                        if self.sel.is_some_and(|(a, f)| a == f) {
                             self.sel = None;
                             self.request_redraw();
                         } else if dragged && self.selected().is_some() {
                             // A finished selection offers what can be done with it.
                             self.open_context_menu();
+                        }
+                        // A click on a figure enlarges it; on a highlight with a
+                        // note, shows the note.
+                        if click && self.view == View::Reading && self.menu.is_none() {
+                            if let Some(fig) = self.figure_at() {
+                                self.open_figure(&fig);
+                            } else if let Some(note) = self.sel_mark.and_then(|id| self.mark_note(id)) {
+                                self.open_note(&note);
+                            }
                         }
                     }
                 }

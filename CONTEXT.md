@@ -581,9 +581,11 @@ that boundary and nowhere else.
 *Selection is parley's.* `Cursor`/`Selection` do hit-testing, extension and
 selection geometry; parley is already pinned by blitz-dom, so naming it directly
 cost one line of `Cargo.toml` and no new code. A press anchors, a drag extends, a
-press with no drag is a click and clears. **One paragraph at a time** — a
-selection lives in one parley layout, and stitching several is a bigger job than
-it looks; a drag past the end clamps to the paragraph rather than doing nothing.
+press with no drag is a click and clears. **A selection runs across
+paragraphs**: it is an anchor and a focus, each an (element, byte) point, and
+what lies between is every inline-layout element in document order, a byte
+range in each. A highlight across paragraphs is still one mark — its CFI names
+where it starts, and its length in characters runs on into the elements after.
 
 *Bookmarks and highlights are one table.* A bookmark is a highlight with no span,
 so `marks` holds both: CFI, length in characters, the words themselves, and a
@@ -758,6 +760,27 @@ dangling contents fragments. MOBI 6 markup is tag soup, so html5ever logs parse
 errors for it; they are noise.
 
 Next: AccessKit — the last item of §7.
+
+**Fixed layout, notes on the page, figures** — three "decide" items, all built,
+all through the existing popup (the next click or key puts it away):
+
+- **Fixed-layout books are read, with a warning.** `rendition:layout`
+  pre-paginated in the OPF, or KF8's fixed-layout flag (EXTH 122), sets
+  `Book::fixed_layout`. Opening one shows a notice that it is reflowed and will
+  not look as designed. Rendering such books as designed (a page per spine item,
+  scaled to the window) is not attempted: comics are not what Omaread is for.
+- **A highlight with a note is underlined** in an opaque amber along its foot;
+  a click inside it (a press and release within a few pixels, not a drag) shows
+  the note.
+- **A click on a figure shows it on its own**, centred on the page ground, at
+  its natural size or scaled down to fit — never up. The page caps images at
+  85vh; this is how a technical figure is seen whole. The image is read
+  synchronously through the book's own provider, so the popup needs no trip
+  through the event loop.
+
+A note popup is laid out again, not dropped, when the window changes: the
+fixed-layout notice arrives just as Hyprland rescales a new window, and was
+lost to that.
 
 ## 9. Spike findings (verified, not assumed)
 

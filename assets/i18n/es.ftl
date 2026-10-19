@@ -83,3 +83,9 @@ a11y-smaller = Texto más pequeño
 a11y-bigger = Texto más grande
 a11y-columns = Columnas: { $n }
 settings-drop-folder = Dejar de buscar en { $folder }
+
+## Avisos
+
+fixed-layout-notice = Este libro está maquetado página a página, como un cómic o un álbum ilustrado. Omaread lo recompone en sus propias páginas, así que no se verá como fue diseñado.
+a11y-figure = Figura
+link-leave = Este enlace sale del libro hacia { $url }. Pulsa Intro para abrirlo en el navegador; cualquier otra tecla o un clic te deja aquí.

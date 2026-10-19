@@ -30,6 +30,8 @@ pub struct Unpacked {
     /// book numbers them.
     pub files: HashMap<String, Vec<u8>>,
     pub cover: Option<String>,
+    /// A fixed-layout book (EXTH 122): comics, picture books.
+    pub fixed_layout: bool,
 }
 
 pub fn open(path: &Path) -> Result<Unpacked, String> {
@@ -148,6 +150,7 @@ fn unpack(data: &[u8]) -> Result<Unpacked, String> {
         toc,
         files,
         cover,
+        fixed_layout: text_of(122).is_some_and(|v| v.eq_ignore_ascii_case("true")),
     })
 }
 
