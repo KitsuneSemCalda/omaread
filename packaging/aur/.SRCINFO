@@ -1,6 +1,6 @@
 pkgbase = omaread-git
 	pkgdesc = An EPUB, AZW3 and MOBI reader for Wayland, made for Omarchy
-	pkgver = 0.1.0.r45.g655c984
+	pkgver = 1.0.0.r46.ge5928f0
 	pkgrel = 1
 	url = https://github.com/danielgccr/omaread
 	arch = x86_64
