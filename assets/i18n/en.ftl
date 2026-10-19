@@ -7,6 +7,8 @@ books-count = { $n ->
    *[other] { $n } books
 }
 library-matching = { $n } matching “{ $query }”
+library-matching-split = “{ $query }”: { $named } in title or author · { $text } in the text
+library-in-text = in the text
 library-title = Library ({ $heading })
 library-empty = Nothing here yet. Put some .epub, .azw3 or .mobi files in a watched folder and press r to rescan.
 library-file-missing = file missing

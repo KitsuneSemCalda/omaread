@@ -10,6 +10,8 @@ library-matching = { $n ->
     [one] { $n } resultado
    *[other] { $n } resultados
 } para «{ $query }»
+library-matching-split = «{ $query }»: { $named } en título o autor · { $text } en el texto
+library-in-text = en el texto
 library-title = Biblioteca ({ $heading })
 library-empty = Todavía no hay nada. Pon archivos .epub, .azw3 o .mobi en una carpeta vigilada y pulsa r para volver a buscar.
 library-file-missing = falta el archivo

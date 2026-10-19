@@ -60,10 +60,18 @@ pub fn html(
         rows.iter().enumerate().map(|(i, b)| card(i, b, covers.contains(&i))).collect();
 
     let count = rows.len();
-    let heading = if query.trim().is_empty() {
-        tr!("books-count", n = count)
-    } else {
-        tr!("library-matching", n = count, query = escape(query))
+    let in_text = rows.iter().filter(|b| b.in_text).count();
+    let heading = match (query.trim().is_empty(), in_text) {
+        (true, _) => tr!("books-count", n = count),
+        (false, 0) => tr!("library-matching", n = count, query = escape(query)),
+        // Say how the matches split, or a shelf of books that never mention the
+        // word in their titles reads as a search gone wrong.
+        (false, _) => tr!(
+            "library-matching-split",
+            named = count - in_text,
+            text = in_text,
+            query = escape(query)
+        ),
     };
 
     let body = match rows.is_empty() {
@@ -198,12 +206,17 @@ fn card(index: usize, b: &BookRow, with_cover: bool) -> String {
   <div class="by">{author}</div>
   {tags}
 </div>"#,
-        tags = match b.tags.is_empty() {
-            true => String::new(),
-            false => format!(
-                r#"<div class="tags">{}</div>"#,
-                escape(&b.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" "))
-            ),
+        // Why a book is here when its title and author do not say: the
+        // search found it in the text. In the tags' line, which `CARD_H` has.
+        tags = {
+            let why = b.in_text.then(|| tr!("library-in-text"));
+            let tags = (!b.tags.is_empty())
+                .then(|| b.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" "));
+            let line: Vec<String> = why.into_iter().chain(tags).collect();
+            match line.is_empty() {
+                true => String::new(),
+                false => format!(r#"<div class="tags">{}</div>"#, escape(&line.join(" · "))),
+            }
         },
         // A book you are 40% through says so; the old blue dot only said
         // "started", which is the least interesting thing about it.
@@ -556,6 +569,21 @@ mod tests {
         assert!(out.contains("missing"));
         assert!(out.contains("data-index=\"1\""));
         assert!(!out.contains("selected"), "selection is painted, not marked up");
+    }
+
+    /// A search that reached into the text says so, in the count and on the
+    /// card, and leaves the tags as they were.
+    #[test]
+    fn matches_found_in_the_text_say_so() {
+        let named = row("Una tumba en el aire", "x");
+        let mut text = row("Adolescencia", "y");
+        text.in_text = true;
+        text.tags = vec!["salud".into(), "hijos".into()];
+        let out = html(&[named, text], "tumba", Sort::Recent, &[], None, 0..2);
+        assert!(out.contains("1 in title or author · 1 in the text"), "{out}");
+        assert!(out.contains("in the text · #salud #hijos"), "{out}");
+        let plain = html(&[row("Una tumba en el aire", "x")], "tumba", Sort::Recent, &[], None, 0..1);
+        assert!(plain.contains("1 matching") && !plain.contains("in the text"), "{plain}");
     }
 
     /// The grid must actually lay out — a failure here means a blank window,

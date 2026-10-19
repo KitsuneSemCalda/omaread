@@ -55,6 +55,9 @@ pub struct BookRow {
     /// The engine panicked on it on `QUARANTINE_AFTER` openings: the library
     /// flags it and asks before opening it again (CONTEXT.md §6).
     pub quarantined: bool,
+    /// Matched a search only through its text, not its title or author. Such
+    /// books sort after the ones the search names, and say why they are there.
+    pub in_text: bool,
 }
 
 /// Openings that panicked the engine before a book is quarantined.
@@ -272,12 +275,15 @@ impl Db {
         };
         let mut args = vec![like];
         args.extend(fts);
+        // Books the search names come first: a title or author match is what
+        // was looked for, a mention somewhere in 300 pages is a lead.
         let sql = format!(
             "SELECT file_hash, file_path, title, author, cover IS NOT NULL, managed, missing,
-                    last_cfi IS NOT NULL, progress, panics >= {QUARANTINE_AFTER}
+                    last_cfi IS NOT NULL, progress, panics >= {QUARANTINE_AFTER},
+                    NOT (?1 = '%%' OR title LIKE ?1 ESCAPE '\\' OR author LIKE ?1 ESCAPE '\\') AS in_text
              FROM books
              WHERE (?1 = '%%' OR title LIKE ?1 ESCAPE '\\' OR author LIKE ?1 ESCAPE '\\'{full_text})
-             ORDER BY {order}"
+             ORDER BY in_text, {order}"
         );
         let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
@@ -295,6 +301,7 @@ impl Db {
                     progress: r.get::<_, f64>(8)? as f32,
                     tags: Vec::new(),
                     quarantined: r.get::<_, i64>(9)? != 0,
+                    in_text: r.get::<_, i64>(10)? != 0,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -327,6 +334,7 @@ impl Db {
                     progress: r.get::<_, f64>(8)? as f32,
                     tags: Vec::new(),
                     quarantined: r.get::<_, i64>(9)? != 0,
+                    in_text: false,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -801,6 +809,30 @@ mod tests {
         }
 
         assert!(db.suggestions("b", 6).is_empty(), "one letter suggests everything");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A search lists the books it names before the ones that only mention the
+    /// word, and marks the latter — or "tumba" shelves *Adolescencia* among
+    /// *Una tumba en el aire* with nothing to say why.
+    #[test]
+    fn books_named_by_a_search_come_before_books_that_mention_it() {
+        let dir = std::env::temp_dir().join(format!("omaread-named-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = super::Db::open_at(dir.join("n.db")).unwrap();
+        for (hash, title) in [("h1", "Adolescencia"), ("h2", "Una tumba en el aire")] {
+            let book = super::BookRow { hash: hash.into(), path: format!("/{hash}.epub"), title: title.into(), ..Default::default() };
+            db.upsert_book(&book).unwrap();
+        }
+        // The one that only mentions it is the more recent, so recency alone
+        // would put it first.
+        db.save_progress("h1", "/h1.epub", "Adolescencia", "/6/2!/4", 0.1).unwrap();
+        db.index_book("h1", &[(0, "una tumba sin nombre".to_string())]).unwrap();
+
+        let found = db.books("tumba", super::Sort::Recent).unwrap();
+        let order: Vec<(&str, bool)> = found.iter().map(|b| (b.title.as_str(), b.in_text)).collect();
+        assert_eq!(order, [("Una tumba en el aire", false), ("Adolescencia", true)]);
+        assert!(db.books("", super::Sort::Recent).unwrap().iter().all(|b| !b.in_text));
         std::fs::remove_dir_all(&dir).ok();
     }
 

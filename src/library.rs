@@ -181,6 +181,7 @@ pub fn describe(path: &Path, hash: String) -> Result<BookRow, String> {
         progress: 0.0,
         tags: Vec::new(),
         quarantined: false,
+        in_text: false,
     })
 }
 
