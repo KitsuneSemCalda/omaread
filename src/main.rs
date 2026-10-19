@@ -301,6 +301,34 @@ mod tests {
         }
     }
 
+    /// The context menu is placed by the window, so its rows have to be where
+    /// the window put them — and fit the height `open_context_menu` estimates.
+    #[test]
+    fn the_context_menu_rows_are_hittable_where_it_was_opened() {
+        let (left, top) = (300.0_f32, 200.0_f32);
+        let doc = crate::chapter::layout_document(
+            crate::hud::context_html(true, true, false),
+            crate::grid::menu_stylesheet("#111", "#888", "#eee", left, top, crate::hud::CONTEXT_W),
+            None,
+            crate::chapter::viewport(1200, 900, 1.0, false),
+            900.0,
+        )
+        .expect("the menu must lay out");
+
+        let x = left + crate::hud::CONTEXT_W / 2.0;
+        let mut found = Vec::new();
+        for y in (top as u32..top as u32 + 5 * 34 + 32).step_by(2) {
+            let what = doc
+                .doc
+                .hit(x, y as f32)
+                .and_then(|hit| crate::ancestor_attr(doc.dom(), hit.node_id, "data-set"));
+            if let Some(what) = what.filter(|w| found.last() != Some(w)) {
+                found.push(what);
+            }
+        }
+        assert_eq!(found, ["copy", "highlight", "unhighlight", "note", "bookmark"]);
+    }
+
     /// Two columns are only worth having when each still gets a real measure;
     /// below that the fallback has to be silent, not a squeezed 38ch column.
     #[test]
@@ -366,7 +394,7 @@ fn main() {
              Reading:  ←/→ page · ↑/↓ chapter · Tab contents · / search · t theme · +/- size · c columns · l library · q quit\n\
                        move the mouse for the menus: marks, contents, size, columns\n\
              Contents: ↑/↓ select · Enter go · Tab or Esc back\n\
-             Marks:    m list · b bookmark · drag to select · h highlight · y copy\n\
+             Marks:    m list · b bookmark · drag to select · right-click menu · h highlight · y copy\n\
                        in the list: n note · x delete"
         );
         return;
@@ -533,6 +561,10 @@ struct App {
     net_rx: Receiver<Resource>,
     size: (u32, u32),
     scale: f32,
+    /// Omarchy's text size as a factor (`style::omarchy_ui_scale`). The chrome
+    /// — HUD, menus, popups — is laid out at `ui_scale()`, the page is not:
+    /// the page has its own font size.
+    ui: f32,
     cursor: (f32, f32),
 }
 
@@ -621,6 +653,7 @@ impl App {
             net_rx,
             size: (900, 1000),
             scale: 1.0,
+            ui: style::omarchy_ui_scale(),
             cursor: (0.0, 0.0),
         };
 
@@ -834,7 +867,7 @@ impl App {
         let Some(book) = self.book.clone() else { return };
         let readout = self.readout();
         let cols = self.effective_columns();
-        let height = self.size.1 as f32 / self.scale;
+        let height = self.size.1 as f32 / self.ui_scale();
         let on_mark = self.sel_mark.is_some();
         let back = self.back.as_ref().map(|(_, _, label)| label.clone());
         let key = format!(
@@ -851,12 +884,7 @@ impl App {
         let html = hud::html(&book.title, &readout, cols, on_mark, height, back.as_deref());
         let ua = hud::stylesheet(&fg, &subtle, &panel);
         // The HUD spans the window; only the page is laid out at column width.
-        let vp = chapter::viewport(
-            self.size.0,
-            self.size.1,
-            self.scale,
-            self.style.dark(),
-        );
+        let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.hud_doc = chapter::layout_document(html, ua, None, vp, self.page_height());
         self.hud_key = key;
     }
@@ -931,14 +959,15 @@ impl App {
         chapter::char_span(ch.dom(), node, range).map(|(_, _, text)| text)
     }
 
-    fn highlight_selection(&mut self) {
+    /// Returns the new mark's `(cfi, length)`, which is what identifies it.
+    fn highlight_selection(&mut self) -> Option<(String, usize)> {
         let Some((node, range)) = self.selected() else {
             println!("omaread: nothing selected — drag across a paragraph first");
-            return;
+            return None;
         };
-        let Some(ch) = self.chapter.as_ref() else { return };
-        let Some((start, len, text)) = chapter::char_span(ch.dom(), node, range) else { return };
-        let Some(mut cfi) = cfi::of_node(ch.dom(), node, self.index) else { return };
+        let ch = self.chapter.as_ref()?;
+        let (start, len, text) = chapter::char_span(ch.dom(), node, range)?;
+        let mut cfi = cfi::of_node(ch.dom(), node, self.index)?;
         cfi.offset = Some(start);
 
         let mark = db::Mark {
@@ -954,6 +983,26 @@ impl App {
             }
         }
         self.sel = None;
+        self.request_redraw();
+        Some((mark.cfi, mark.length))
+    }
+
+    /// Note the highlight the press landed in, or highlight the selection and
+    /// note that. The typing happens in the marks list, where notes always have.
+    fn note_here(&mut self) {
+        let id = match self.sel_mark.take() {
+            Some(id) => Some(id),
+            None => self.highlight_selection().and_then(|(cfi, len)| {
+                self.load_marks().into_iter().find(|m| m.cfi == cfi && m.length == len)
+            }).map(|m| m.id),
+        };
+        let Some(id) = id else { return };
+        self.open_marks();
+        let Some(i) = self.marks.iter().position(|m| m.id == id) else { return };
+        self.toc_sel = i;
+        self.begin_note();
+        self.build_toc();
+        self.page = self.toc_doc.as_ref().and_then(|d| page_of_index(d, i)).unwrap_or(0);
         self.request_redraw();
     }
 
@@ -1114,7 +1163,10 @@ impl App {
         // The cog is in the shelf's flow, and the shelf is a page, so its window
         // position is the flow position plus the page margin. Clamped so a cog
         // near the right edge does not hang the panel off the screen.
-        let win_w = self.size.0 as f32 / self.scale;
+        // The cog is in page pixels and the panel is chrome, laid out at
+        // `ui_scale`; `ui` is the step between the two.
+        let ui = self.ui;
+        let win_w = self.size.0 as f32 / self.ui_scale();
         let margin = self.page_margin();
         self.menu_at = self
             .lib_doc
@@ -1123,11 +1175,11 @@ impl App {
             .and_then(|n| chapter::node_rect(self.lib_doc.as_ref()?.dom(), n))
             .map(|(x, y, _, h)| {
                 (
-                    (x - 10.0).clamp(
+                    ((x - 10.0) / ui).clamp(
                         grid::SIDE_PAD as f32,
                         (win_w - grid::MENU_W - grid::SIDE_PAD as f32).max(0.0),
                     ),
-                    y + h + margin + 10.0,
+                    (y + h + margin) / ui + 10.0,
                 )
             });
         self.build_menu();
@@ -1145,15 +1197,10 @@ impl App {
             &folders,
             self.adding_folder.as_deref(),
         );
-        let vp = chapter::viewport(
-            self.size.0,
-            self.size.1,
-            self.scale,
-            self.style.dark(),
-        );
+        let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.menu = chapter::layout_document(
             html,
-            grid::menu_stylesheet(&fg, &subtle, &panel, left, top),
+            grid::menu_stylesheet(&fg, &subtle, &panel, left, top, grid::MENU_W),
             None,
             vp,
             self.page_height(),
@@ -1164,7 +1211,7 @@ impl App {
     /// The panel row under the pointer, by its `data-set` name.
     fn menu_under_pointer(&self) -> Option<String> {
         let menu = self.menu.as_ref()?;
-        let (x, y) = (self.cursor.0 / self.scale, self.cursor.1 / self.scale);
+        let (x, y) = self.pointer_in_ui();
         let hit = menu.doc.hit(x, y)?;
         ancestor_attr(menu.dom(), hit.node_id, "data-set")
     }
@@ -1179,8 +1226,25 @@ impl App {
             self.menu = None;
             self.adding_folder = None;
             self.request_redraw();
-            return true;
+            // On the page a press elsewhere is a press like any other: it
+            // starts the next selection.
+            return self.view != View::Reading;
         };
+
+        // The reading view's context menu: act once, then get out of the way.
+        if self.view == View::Reading {
+            self.menu = None;
+            match what.as_str() {
+                "copy" => self.copy_selection(),
+                "highlight" => drop(self.highlight_selection()),
+                "unhighlight" => self.remove_selected_mark(),
+                "note" => self.note_here(),
+                "bookmark" => self.toggle_bookmark(),
+                _ => {}
+            }
+            self.request_redraw();
+            return true;
+        }
 
         match what.split_once(':') {
             Some(("theme", name)) => {
@@ -1203,6 +1267,37 @@ impl App {
         }
         self.build_menu();
         true
+    }
+
+    /// The context menu, at the pointer: a right click, or the end of a drag.
+    /// It lives in `menu`, like the settings panel, so hover, hit-testing and
+    /// painting are the panel's.
+    fn open_context_menu(&mut self) {
+        let bookmarked = self.cfi_of_page().is_some_and(|c| {
+            let db = self.db.as_ref().and_then(|d| d.lock().ok());
+            db.and_then(|db| db.bookmark_at(&self.hash, &c.to_string())).is_some()
+        });
+        let html = hud::context_html(self.selected().is_some(), self.sel_mark.is_some(), bookmarked);
+
+        // ponytail: height estimated from the row count, not measured. Measure
+        // the laid-out panel if a row ever wraps.
+        let rows = html.matches("data-set").count() as f32;
+        let (win_w, win_h) = (self.size.0 as f32 / self.ui_scale(), self.size.1 as f32 / self.ui_scale());
+        let (x, y) = self.pointer_in_ui();
+        let left = x.min(win_w - hud::CONTEXT_W - 8.0).max(0.0);
+        let top = y.min(win_h - rows * 34.0 - 32.0).max(0.0);
+
+        let (_, fg, subtle, panel) = self.chrome();
+        let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
+        self.menu = chapter::layout_document(
+            html,
+            grid::menu_stylesheet(&fg, &subtle, &panel, left, top, hud::CONTEXT_W),
+            None,
+            vp,
+            self.page_height(),
+        );
+        self.hover_menu = None;
+        self.request_redraw();
     }
 
     /// Add whatever folder was typed, and pick up what is in it.
@@ -1325,12 +1420,7 @@ impl App {
 
     fn open_note(&mut self, text: &str) {
         let (_, fg, subtle, panel) = self.chrome();
-        let vp = chapter::viewport(
-            self.size.0,
-            self.size.1,
-            self.scale,
-            self.style.dark(),
-        );
+        let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.popup = chapter::layout_document(
             hud::note_html(text),
             hud::note_stylesheet(&fg, &subtle, &panel),
@@ -1541,7 +1631,7 @@ impl App {
             return None;
         }
         let hud = self.hud_doc.as_ref()?;
-        let (x, y) = (self.cursor.0 / self.scale, self.cursor.1 / self.scale);
+        let (x, y) = self.pointer_in_ui();
         let hit = hud.doc.hit(x, y)?;
         ancestor_attr(hud.dom(), hit.node_id, "data-hud")
     }
@@ -1556,7 +1646,7 @@ impl App {
                 self.open_toc();
             }
             "back" => self.go_back(),
-            "highlight" => self.highlight_selection(),
+            "highlight" => drop(self.highlight_selection()),
             "unhighlight" => self.remove_selected_mark(),
             "library" => {
                 self.to_library();
@@ -1904,6 +1994,25 @@ impl App {
         )
     }
 
+    /// The scale the chrome is laid out and painted at: the monitor's, times
+    /// Omarchy's text size. Its CSS pixels are window pixels over this.
+    fn ui_scale(&self) -> f32 {
+        self.scale * self.ui
+    }
+
+    /// Forget the chrome laid out at the old scale. The HUD comes back on the
+    /// next frame; a menu or a popup was placed for a window that is gone.
+    fn drop_chrome(&mut self) {
+        self.hud_doc = None;
+        self.menu = None;
+        self.popup = None;
+    }
+
+    /// The pointer in chrome CSS pixels.
+    fn pointer_in_ui(&self) -> (f32, f32) {
+        (self.cursor.0 / self.ui_scale(), self.cursor.1 / self.ui_scale())
+    }
+
     /// Vertical margin above and below the page, in CSS pixels.
     fn page_margin(&self) -> f32 {
         PAGE_MARGIN_EM * self.style.font_px()
@@ -2214,6 +2323,7 @@ impl App {
         let started = Instant::now();
         let (w, h) = self.size;
         let scale = self.scale as f64;
+        let ui_scale = self.ui_scale() as f64;
         let page = self.page;
         let page_h = self.page_height();
         let margin = self.page_margin();
@@ -2343,6 +2453,8 @@ impl App {
             margin,
             page_height: page_h,
         };
+        // The chrome is the same window at a bigger scale.
+        let ui_frame = paint::Frame { scale: ui_scale, ..frame };
         let col_w = (w as f32 / scale as f32) / cols as f32;
 
         renderer.render(|scene| {
@@ -2402,7 +2514,7 @@ impl App {
                     );
                 }
                 if let Some(note) = popup.as_mut() {
-                    paint::overlay(scene, &mut note.doc, &frame);
+                    paint::overlay(scene, &mut note.doc, &ui_frame);
                 }
                 // The library's cog, in flow coordinates like the selection
                 // outline: the shelf is a page, so it carries the page margin.
@@ -2412,20 +2524,10 @@ impl App {
                         paint::icon(scene, icon, (cx, cy - top + margin, cw, chh), ink, scale);
                     }
                 }
-                if let Some(m) = menu.as_mut() {
-                    paint::overlay(scene, &mut m.doc, &frame);
-                    if let Some(rect) = hover_menu
-                        .as_deref()
-                        .and_then(|r| find_by_attr(m.dom(), 0, "data-set", r))
-                        .and_then(|n| chapter::node_rect(m.dom(), n))
-                    {
-                        paint::wash(scene, rect, MENU_HOVER, scale);
-                    }
-                }
                 if let Some(hud) = hud {
-                    paint::overlay(scene, &mut hud.doc, &frame);
+                    paint::overlay(scene, &mut hud.doc, &ui_frame);
                     for &(icon, rect) in &icons {
-                        paint::icon(scene, icon, rect, ink, scale);
+                        paint::icon(scene, icon, rect, ink, ui_scale);
                     }
                     // Over the bar, not under it: the bar's ground is opaque.
                     if let Some(rect) = hover_hud
@@ -2433,7 +2535,18 @@ impl App {
                         .and_then(|w| find_by_attr(hud.dom(), 0, "data-hud", w))
                         .and_then(|n| chapter::node_rect(hud.dom(), n))
                     {
-                        paint::wash(scene, rect, HUD_HOVER, scale);
+                        paint::wash(scene, rect, HUD_HOVER, ui_scale);
+                    }
+                }
+                // Last, so the context menu sits over the bars too.
+                if let Some(m) = menu.as_mut() {
+                    paint::overlay(scene, &mut m.doc, &ui_frame);
+                    if let Some(rect) = hover_menu
+                        .as_deref()
+                        .and_then(|r| find_by_attr(m.dom(), 0, "data-set", r))
+                        .and_then(|n| chapter::node_rect(m.dom(), n))
+                    {
+                        paint::wash(scene, rect, MENU_HOVER, ui_scale);
                     }
                 }
             }));
@@ -2660,6 +2773,10 @@ impl App {
         // A theme switch rewrites the rendered palette, and F5 already means
         // "pick up what changed on disk".
         self.style.omarchy = style::omarchy_chrome();
+        // Not `drop_chrome`: F5 is also pressed from inside the settings
+        // panel, which its caller rebuilds.
+        self.ui = style::omarchy_ui_scale();
+        self.hud_doc = None;
         let Some(db) = self.db.clone() else { return };
         if let Ok(d) = db.lock() {
             let (seen, added) = library::scan(&d);
@@ -2669,6 +2786,13 @@ impl App {
     }
 
     fn reading_key(&mut self, event_loop: &ActiveEventLoop, key: Key) {
+        // Any key puts the context menu away; Escape does nothing else.
+        if self.menu.take().is_some() {
+            self.request_redraw();
+            if key == Key::Named(NamedKey::Escape) {
+                return;
+            }
+        }
         match key {
             Key::Named(NamedKey::Escape) => self.to_library(),
             Key::Named(NamedKey::Tab) => self.open_toc(),
@@ -2690,7 +2814,7 @@ impl App {
                 }
                 "m" => self.open_marks(),
                 "b" => self.toggle_bookmark(),
-                "h" => self.highlight_selection(),
+                "h" => drop(self.highlight_selection()),
                 "y" => self.copy_selection(),
                 "c" => self.toggle_columns(),
                 "t" => {
@@ -2977,6 +3101,27 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
 
+            // Moved to another monitor, or `omarchy hyprland monitor scaling`.
+            // A resize follows with the new physical size; the chrome has to
+            // be laid out again at the new scale either way.
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale = scale_factor as f32;
+                self.drop_chrome();
+                self.relayout();
+                self.request_redraw();
+            }
+
+            // `omarchy display text size` changes the desktop while we are in
+            // the background; coming back is when to look.
+            WindowEvent::Focused(true) => {
+                let ui = style::omarchy_ui_scale();
+                if ui != self.ui {
+                    self.ui = ui;
+                    self.drop_chrome();
+                    self.request_redraw();
+                }
+            }
+
             WindowEvent::Resized(size) => {
                 self.size = (size.width.max(1), size.height.max(1));
                 self.renderer.set_size(self.size.0, self.size.1);
@@ -3012,10 +3157,23 @@ impl ApplicationHandler for App {
                 }
             }
 
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Right,
+                ..
+            } if self.view == View::Reading => {
+                // The same check a left press makes, so a right click inside a
+                // highlight offers to remove it.
+                self.sel_mark = self.mark_at(self.pointer_in_flow());
+                self.open_context_menu();
+            }
+
             WindowEvent::MouseInput { state, button, .. }
                 if button == winit::event::MouseButton::Left =>
             {
                 match state {
+                    // A menu is over everything, so it gets the press first.
+                    ElementState::Pressed if self.menu_action() => {}
                     // In the page, a press anchors a selection; in the library
                     // and the contents it opens whatever is under the pointer.
                     ElementState::Pressed if self.view == View::Reading => {
@@ -3025,15 +3183,16 @@ impl ApplicationHandler for App {
                             self.begin_selection();
                         }
                     }
-                    // The panel is over the shelf, so it gets the press first.
-                    ElementState::Pressed if self.menu_action() => {}
                     ElementState::Pressed => self.on_click(),
                     ElementState::Released => {
-                        self.dragging = false;
+                        let dragged = std::mem::take(&mut self.dragging);
                         // A press with no drag is a click, not a selection.
                         if self.sel.as_ref().is_some_and(|(_, s)| s.is_collapsed()) {
                             self.sel = None;
                             self.request_redraw();
+                        } else if dragged && self.selected().is_some() {
+                            // A finished selection offers what can be done with it.
+                            self.open_context_menu();
                         }
                     }
                 }
@@ -3045,6 +3204,10 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::PixelDelta(p) => -p.y as f32,
                 };
                 if dy.abs() > 0.5 {
+                    // A context menu belongs to the page it was opened on.
+                    if self.view == View::Reading {
+                        self.menu = None;
+                    }
                     // The reading turn crosses chapters and saves a position;
                     // the library and the contents just page their document.
                     match self.view {

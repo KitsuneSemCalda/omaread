@@ -383,6 +383,41 @@ pub fn omarchy_chrome() -> Option<Chrome> {
     Some((bg, fg, subtle, panel))
 }
 
+/// Where `omarchy display text size` keeps the desktop's text size.
+const OMARCHY_SHELL: &str = ".config/omarchy/shell.toml";
+
+/// How much bigger than stock the chrome should be, by Omarchy's own rule.
+///
+/// `omarchy display text size` is one knob for the whole desktop: a px
+/// `base-size` under `[font]`, anchored at 12px, from which the shell, GTK's
+/// `text-scaling-factor` and the terminals all derive. Ours derives the same
+/// way — 12px is 1.0 — and multiplies the monitor scale, which winit already
+/// hands over. 1.0 off Omarchy, or with the size never set.
+pub fn omarchy_ui_scale() -> f32 {
+    let home = std::env::var_os("HOME");
+    home.and_then(|h| std::fs::read_to_string(std::path::Path::new(&h).join(OMARCHY_SHELL)).ok())
+        .and_then(|toml| base_size(&toml))
+        .map_or(1.0, |px| px / 12.0)
+}
+
+/// `base-size` under `[font]`, held to the 9–20px Omarchy itself accepts.
+///
+/// ponytail: a line scan, not a TOML parser. It is one key in one section;
+/// take the `toml` crate if a second Omarchy setting is ever read.
+fn base_size(toml: &str) -> Option<f32> {
+    let mut in_font = false;
+    for line in toml.lines().map(|l| l.split('#').next().unwrap_or("").trim()) {
+        if line.starts_with('[') {
+            in_font = line == "[font]";
+        } else if let Some(("base-size", v)) = line.split_once('=').map(|(k, v)| (k.trim(), v)) {
+            if in_font {
+                return v.trim().parse::<f32>().ok().map(|px| px.clamp(9.0, 20.0));
+            }
+        }
+    }
+    None
+}
+
 /// `#rrggbb` as components. Only ever given strings `parse_chrome` accepted.
 fn hex_rgb(hex: &str) -> [u8; 3] {
     let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0);
@@ -416,6 +451,16 @@ fn parse_chrome(css: &str) -> Option<Chrome> {
 
 #[cfg(test)]
 mod tests {
+    /// Only `[font]`'s base-size counts, and only within Omarchy's own range.
+    #[test]
+    fn the_omarchy_text_size_is_read_from_the_font_section() {
+        use super::base_size;
+        assert_eq!(base_size("[font]\nbase-size = 14\n"), Some(14.0));
+        assert_eq!(base_size("[bar]\nbase-size = 18\n[font]\nfamily = x\n"), None);
+        assert_eq!(base_size("[font]\nbase-size = 40 # huge\n"), Some(20.0));
+        assert_eq!(base_size(""), None);
+    }
+
     /// A setting has to survive being written next to another one, or changing
     /// the font size would forget the watched folders' neighbours.
     #[test]

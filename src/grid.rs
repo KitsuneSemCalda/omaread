@@ -260,7 +260,7 @@ pub const MENU_W: f32 = 520.0;
 
 /// `left` and `top` put the panel under the cog that opened it, in window CSS
 /// pixels — a menu that opens somewhere else is a menu you have to look for.
-pub fn menu_stylesheet(fg: &str, subtle: &str, panel: &str, left: f32, top: f32) -> String {
+pub fn menu_stylesheet(fg: &str, subtle: &str, panel: &str, left: f32, top: f32, width: f32) -> String {
     format!(
         r#"
 html {{
@@ -272,7 +272,7 @@ html {{
 html *, html *::before, html *::after {{ box-sizing: inherit; }}
 html body {{ margin: 0; padding: {top}px 0 0 {left}px; background: transparent; }}
 html .menu {{
-  width: {MENU_W}px;
+  width: {width}px;
   padding: 14px 0 10px 0;
   border-radius: 12px;
   border: 1px solid {subtle};
@@ -298,6 +298,8 @@ html .row.on {{
 html .tick {{ width: 22px; color: {subtle}; }}
 html .row.on .tick {{ color: #0a84ff; }}
 html .caret {{ color: #0a84ff; }}
+/* A row's key, pushed to the right edge: the reading view's context menu. */
+html .key {{ margin-left: auto; padding-left: 24px; color: {subtle}; }}
 html .foot {{
   padding: 10px 22px 2px 22px;
   font-size: 12px;

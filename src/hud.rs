@@ -64,6 +64,35 @@ pub fn html(
     )
 }
 
+/// Width of the context menu, in CSS px. The window places it at the pointer,
+/// so it has to know how wide it is.
+pub const CONTEXT_W: f32 = 240.0;
+
+/// The menu a right click or a finished drag opens over the page. Only what
+/// applies is offered. It borrows the settings panel's sheet and `data-set`
+/// rows, so hover and hit-testing are the panel's too.
+pub fn context_html(selection: bool, on_highlight: bool, bookmarked: bool) -> String {
+    let row = |set: &str, label: &str, key: &str| {
+        format!(r#"<div class="row" data-set="{set}">{label}<span class="key">{key}</span></div>"#)
+    };
+    let mut rows = String::new();
+    if selection {
+        rows += &row("copy", "Copy", "y");
+        rows += &row("highlight", "Highlight", "h");
+    }
+    if on_highlight {
+        rows += &row("unhighlight", "Remove highlight", "");
+    }
+    if selection || on_highlight {
+        rows += &row("note", "Add note…", "");
+    }
+    rows += &match bookmarked {
+        true => row("bookmark", "Remove bookmark", "b"),
+        false => row("bookmark", "Bookmark page", "b"),
+    };
+    format!(r#"<!DOCTYPE html><html><body><div class="menu">{rows}</div></body></html>"#)
+}
+
 /// A footnote or a bibliography entry, shown where you are rather than by
 /// sending you to the page it lives on and leaving you to find your way back.
 pub fn note_html(text: &str) -> String {
@@ -220,6 +249,21 @@ mod tests {
         assert!(inside.contains(">Remove<"));
         // The icon slot stays, whichever way the button reads.
         assert!(inside.contains(r#"data-icon="highlight""#));
+    }
+
+    /// The context menu offers only what applies to where it was opened.
+    #[test]
+    fn the_context_menu_offers_only_what_applies() {
+        let bare = context_html(false, false, false);
+        assert!(!bare.contains(r#"data-set="copy""#) && !bare.contains("unhighlight"), "{bare}");
+        assert!(!bare.contains(r#"data-set="note""#), "nothing to attach a note to: {bare}");
+        assert!(bare.contains("Bookmark page"));
+
+        let all = context_html(true, true, true);
+        for what in ["copy", "highlight", "unhighlight", "note", "bookmark"] {
+            assert!(all.contains(&format!(r#"data-set="{what}""#)), "missing {what}: {all}");
+        }
+        assert!(all.contains("Remove bookmark"));
     }
 
     /// Every icon slot the window paints into has to exist in the markup.

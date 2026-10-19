@@ -682,6 +682,16 @@ that is not. Stable at 393 pages from chapters 8, 60 and 120 of the same book.
 remembers it, and the Highlight control becomes Remove — the useful offer once
 the pointer is already inside one. `x` in the marks list still works.
 
+**A context menu: right click, or the end of a drag.** Copy and Highlight when
+there is a selection, Remove highlight when the pointer is inside one, Add
+note for either, and Bookmark page (or Remove bookmark). Add note on a selection
+highlights it first — a note hangs off a mark — then opens the marks list typing
+into that mark's note, the same typing mode `n` uses. It is the settings panel's document — the
+same `menu` field, sheet, `data-set` rows, hover wash and hit-testing — placed at
+the pointer and clamped to the window. It acts once and closes; a press
+elsewhere closes it and starts the next selection, any key or a page turn puts
+it away.
+
 **The bottom bar opens with a Library button**, back arrow first, then the title.
 
 Next: AZW3/MOBI import and AccessKit — the last two items of §7. MOBI is the only
@@ -910,6 +920,16 @@ integration degrades to a sensible default elsewhere.
 - Ship a suggested Hyprland window rule and keybinding. **Done**, same
   directory. The window sets `app_id = omaread`; without it the class is empty
   and no rule matches.
+- **The chrome scales the way Omarchy scales.** Omarchy has two knobs: the
+  monitor scale (`omarchy hyprland monitor scaling`), which reaches us as
+  winit's scale factor, and `omarchy display text size`, a px `base-size` under
+  `[font]` in `~/.config/omarchy/shell.toml`, anchored at 12px, that the shell,
+  GTK and the terminals all derive from. The HUD, the menus and the note popup
+  are laid out at **monitor scale × base-size / 12**, so they track the rest of
+  the desktop; the page is not — it has its own font size (§8, "Font size is
+  universal"), and the desktop's text size is not a reason to repaginate a book.
+  Read at startup, on F5, and whenever the window regains focus; a monitor
+  scale change (`ScaleFactorChanged`) relays out on the spot.
 - **Binary is `omaread`.** Not `omarchy-read` — `omarchy-*` is upstream's
   namespace; squatting it invites confusion and makes upstream inclusion harder,
   not easier.

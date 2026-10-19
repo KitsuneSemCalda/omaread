@@ -108,6 +108,9 @@ pub fn run(args: &[String]) -> i32 {
     };
     let top = ch.pages.top_of(page);
 
+    // The chrome at Omarchy's text size, as in the window; the shot itself is
+    // at scale 1, so that is the whole of the chrome's scale.
+    let ui = style::omarchy_ui_scale();
     let mut hud_doc = with_hud
         .then(|| {
             let within = match ch.pages.content_height > 0.0 {
@@ -132,11 +135,11 @@ pub fn run(args: &[String]) -> i32 {
 
             let (_, fg, subtle, panel) = style.chrome();
             chapter::layout_document(
-                hud::html(&book.title, &readout, cols as usize, false, h as f32, None),
+                hud::html(&book.title, &readout, cols as usize, false, h as f32 / ui, None),
                 hud::stylesheet(&fg, &subtle, &panel),
                 None,
                 // The HUD spans the window, not a column.
-                chapter::viewport(w, h, 1.0, style.dark()),
+                chapter::viewport(w, h, ui, style.dark()),
                 page_height,
             )
         })
@@ -225,10 +228,10 @@ pub fn run(args: &[String]) -> i32 {
                 if std::env::var_os("OMAREAD_DEBUG_PAINT").is_some() {
                     eprintln!("ICONS {icons:?}");
                 }
-                paint::overlay(scene, &mut c.doc, &frame);
+                paint::overlay(scene, &mut c.doc, &Frame { scale: ui as f64, ..frame });
                 let ink = crate::parse_hex(&style.chrome().1);
                 for (icon, rect) in icons {
-                    paint::icon(scene, icon, rect, ink, 1.0);
+                    paint::icon(scene, icon, rect, ink, ui as f64);
                 }
             }
         },
