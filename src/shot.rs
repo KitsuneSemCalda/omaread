@@ -16,14 +16,9 @@ use crate::style::{self, PAGE_MARGIN_EM, ReadingStyle, Theme};
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer as VelloImageRenderer;
 use blitz_dom::net::Resource;
-use blitz_traits::net::{NetCallback, SharedCallback};
+use blitz_traits::net::SharedCallback;
 use peniko::Color;
 use std::sync::Arc;
-
-struct Discard;
-impl NetCallback<Resource> for Discard {
-    fn call(&self, _doc_id: usize, _result: Result<Resource, Option<String>>) {}
-}
 
 pub fn run(args: &[String]) -> i32 {
     if args.first().map(String::as_str) == Some("library") {
@@ -73,11 +68,17 @@ pub fn run(args: &[String]) -> i32 {
     };
 
     let index = chapter_arg.parse::<usize>().unwrap_or(1).saturating_sub(1);
-    let cb: SharedCallback<Resource> = Arc::new(Discard);
+    // Figures are loaded, as the window loads them: a shot without them is a
+    // different page.
+    let keep = Arc::new(crate::check::Keep::default());
+    let cb: SharedCallback<Resource> = keep.clone();
     // Hyphenated as the window does it: soft hyphens change every line break.
     let hyph = crate::hyphen::Hyphenator_::for_language(&book.language);
     let mut ch = match chapter::load(&book, index, &style, make_viewport(), page_height, hyph.as_ref(), cb) {
-        Ok(c) => c,
+        Ok(mut c) => {
+            keep.load_into(&mut c, make_viewport(), page_height);
+            c
+        }
         Err(e) => {
             eprintln!("omaread: {e}");
             return 1;

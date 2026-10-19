@@ -157,6 +157,14 @@ impl ReadingStyle {
         // Code is set in the chrome's face: the desktop's monospace on
         // Omarchy, the bundled one elsewhere (`Chrome::font`).
         let mono = self.chrome().font;
+        // Line art is often black on transparent (SICP's register machines),
+        // drawn for white paper; on a dark page it vanishes. Give images the
+        // text colour as a backdrop there, with room so ink at the edge is not
+        // cut flush. An opaque image hides all but that margin.
+        let img_bg = match self.dark() {
+            true => format!("background: {fg}; padding: 0.3em; border-radius: 4px;"),
+            false => String::new(),
+        };
 
         format!(
             r#"
@@ -230,6 +238,7 @@ html svg {{
   margin: 1.2em auto;
   max-width: 100%;
   max-height: 85vh;
+  {img_bg}
 }}
 figure {{ margin: 1.4em 0; }}
 html figcaption {{
@@ -598,6 +607,9 @@ mod tests {
         assert!(css.contains("font-size: 24px"), "scale not applied");
         assert!(css.contains(r#"font-family: "IBM Plex Mono""#), "bundled mono off Omarchy");
         assert!(s.dark());
+        assert!(css.contains("background: #e5e5ea"), "no backdrop for transparent figures");
+        let sepia = ReadingStyle { theme: Theme::Sepia, ..s };
+        assert!(!sepia.stylesheet().contains("padding: 0.3em"));
     }
 
     /// The page follows the Omarchy palette only when that theme is chosen,

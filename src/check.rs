@@ -22,7 +22,20 @@ const H: u32 = 1000;
 /// Figures are loaded, as the window loads them: an image arriving moves every
 /// page break after it, and a check without them checks a different book.
 #[derive(Default)]
-struct Keep(Mutex<Vec<Resource>>);
+pub struct Keep(Mutex<Vec<Resource>>);
+impl Keep {
+    /// Hand the chapter what arrived and lay it out again with it.
+    pub fn load_into(&self, c: &mut chapter::Chapter, viewport: blitz_traits::shell::Viewport, page_h: f32) {
+        let figures: Vec<Resource> = self.0.lock().map(|mut v| v.drain(..).collect()).unwrap_or_default();
+        if !figures.is_empty() {
+            for r in figures {
+                c.doc.load_resource(r);
+            }
+            chapter::relayout(c, viewport, page_h);
+        }
+    }
+}
+
 impl NetCallback<Resource> for Keep {
     fn call(&self, _doc_id: usize, result: Result<Resource, Option<String>>) {
         if let (Ok(r), Ok(mut v)) = (result, self.0.lock()) {
@@ -100,15 +113,8 @@ pub fn run(paths: &[String]) -> i32 {
             let keep = Arc::new(Keep::default());
             let cb: SharedCallback<Resource> = keep.clone();
             let ch = match chapter::load(&book, i, &style, make_viewport(), page_h, hyph.as_ref(), cb) {
-                Ok(c) => {
-                    let mut c = c;
-                    let figures: Vec<Resource> = keep.0.lock().map(|mut v| v.drain(..).collect()).unwrap_or_default();
-                    if !figures.is_empty() {
-                        for r in figures {
-                            c.doc.load_resource(r);
-                        }
-                        chapter::relayout(&mut c, make_viewport(), page_h);
-                    }
+                Ok(mut c) => {
+                    keep.load_into(&mut c, make_viewport(), page_h);
                     c
                 }
                 Err(e) if book.chapter_html(i).is_err() => {

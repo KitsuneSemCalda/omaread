@@ -148,6 +148,8 @@ headings        1.5 / 1.3 / 1.15em, weight 600, ragged-right
 blockquote      margin-inline: 2em; 0.95em
 pre / code      bundled mono, 0.9em, tinted panel, pre-wrap (never scrolls)
 img             block, centered, max-width: 100%, max-height: 85vh
+                on a dark page: text-colour backdrop, 0.3em padding — line art
+                is often black on transparent and would vanish
 figcaption      0.85em, subtle, ragged
 links           internal → navigate; external → confirm dialog → xdg-open
 themes          Omarchy (desktop palette, default) / White / Sepia / Grey / Night
