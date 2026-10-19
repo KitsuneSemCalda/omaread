@@ -12,11 +12,13 @@
 //! the clip shape rather than the content; a transform applied to every drawing
 //! command is a different thing, and it does move the content.
 
-use anyrender::{Glyph, NormalizedCoord, PaintRef, PaintScene};
+use anyrender::{Glyph, NormalizedCoord, Paint, PaintRef, PaintScene};
 use blitz_html::HtmlDocument;
 use blitz_dom::Point;
 use kurbo::{Affine, Rect, Shape, Stroke};
-use peniko::{BlendMode, Color, Fill, FontData, StyleRef};
+use peniko::{BlendMode, Color, Fill, FontData, ImageBrush, ImageData, ImageQuality, StyleRef};
+use std::cell::RefCell;
+use std::sync::Arc;
 
 /// Window geometry for one frame, in the units each part of the paint path
 /// wants: physical pixels for the surface, CSS pixels for the page box.
@@ -61,11 +63,13 @@ pub fn column(
     // column; the scene is otherwise identical to a one-column frame.
     let w = (width * scale as f32).round() as u32;
     if first {
-        blitz_paint::paint_scene(scene, doc, scale, w, height);
-        soft_hyphens(scene, doc, scale, height);
+        // The first column starts the frame, so blitz's reset goes through.
+        let mut scene = Compose { inner: scene, shift: Affine::IDENTITY, reset: true };
+        blitz_paint::paint_scene(&mut scene, doc, scale, w, height);
+        soft_hyphens(&mut scene, doc, scale, height);
     } else {
         let shift = Affine::translate((x as f64 * scale, 0.0));
-        let mut shifted = Compose { inner: scene, shift };
+        let mut shifted = Compose { inner: scene, shift, reset: false };
         blitz_paint::paint_scene(&mut shifted, doc, scale, w, height);
         soft_hyphens(&mut shifted, doc, scale, height);
     }
@@ -491,7 +495,7 @@ pub fn bands(
 /// so nothing here needs to know where the overlay wants to sit.
 pub fn overlay(scene: &mut impl PaintScene, doc: &mut HtmlDocument, frame: &Frame) {
     doc.set_viewport_scroll(Point { x: 0.0, y: 0.0 });
-    let mut scene = Compose { inner: scene, shift: Affine::IDENTITY };
+    let mut scene = Compose { inner: scene, shift: Affine::IDENTITY, reset: false };
     blitz_paint::paint_scene(&mut scene, doc, frame.scale, frame.width, frame.height);
 }
 
@@ -501,14 +505,23 @@ pub fn overlay(scene: &mut impl PaintScene, doc: &mut HtmlDocument, frame: &Fram
 /// Swallowing the reset is what lets a second `paint_scene` land on top of the
 /// first while `BlitzDomPainter`'s fields stay `pub(crate)`. The shift is what
 /// puts it somewhere else — the second column, or nothing at all for an overlay.
+///
+/// Every image goes through it too, and is drawn by [`fitted`]: resampled once
+/// to the size it is painted at, then copied 1:1.
 struct Compose<'a, S: PaintScene> {
     inner: &'a mut S,
     shift: Affine,
+    /// Pass `reset` on: only for the first column of a frame.
+    reset: bool,
 }
 
 impl<S: PaintScene> PaintScene for Compose<'_, S> {
     /// Half the point.
-    fn reset(&mut self) {}
+    fn reset(&mut self) {
+        if self.reset {
+            self.inner.reset();
+        }
+    }
 
     fn push_layer(
         &mut self,
@@ -543,7 +556,36 @@ impl<S: PaintScene> PaintScene for Compose<'_, S> {
         brush_transform: Option<Affine>,
         shape: &impl Shape,
     ) {
-        self.inner.fill(style, self.shift * transform, brush, brush_transform, shape);
+        let transform = self.shift * transform;
+        let brush = brush.into();
+        // An image drawn whole, scaled but not rotated: what blitz does for
+        // every `<img>`. Anything else goes through untouched.
+        if let Paint::Image(img) = &brush
+            && brush_transform.is_none()
+            && let [sx, 0.0, 0.0, sy, x, y] = transform.as_coeffs()
+            && sx > 0.0
+            && sy > 0.0
+            && img.image.format == peniko::ImageFormat::Rgba8
+            && shape.as_rect() == Some(Rect::new(0.0, 0.0, img.image.width as f64, img.image.height as f64))
+        {
+            let (w, h) = (
+                (img.image.width as f64 * sx).round() as u32,
+                (img.image.height as f64 * sy).round() as u32,
+            );
+            if w > 0 && h > 0 {
+                let image = fitted(img.image, w, h);
+                let sampler = peniko::ImageSampler { quality: ImageQuality::Low, ..img.sampler };
+                self.inner.fill(
+                    style,
+                    Affine::translate((x.round(), y.round())),
+                    ImageBrush { image: &image, sampler },
+                    None,
+                    &Rect::new(0.0, 0.0, w as f64, h as f64),
+                );
+                return;
+            }
+        }
+        self.inner.fill(style, transform, brush, brush_transform, shape);
     }
 
     fn draw_glyphs<'a, 's: 'a>(
@@ -583,5 +625,143 @@ impl<S: PaintScene> PaintScene for Compose<'_, S> {
         std_dev: f64,
     ) {
         self.inner.draw_box_shadow(self.shift * transform, rect, brush, radius, std_dev);
+    }
+}
+
+/// How many resampled images to keep. A page shows a few; this covers both
+/// pages of a turn and the way back.
+const FITTED_MAX: usize = 16;
+
+thread_local! {
+    /// Images resampled to the size they are drawn at, most recent first. The
+    /// source is held weakly: a book image dies with its chapter, and an entry
+    /// whose source is gone is never matched, so a new image that happens to
+    /// reuse the old one's address cannot be drawn with the old pixels.
+    static FITTED: RefCell<Vec<(peniko::WeakBlob<u8>, ImageData)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// `src` resampled to exactly `w`×`h`, from the cache when it was asked for
+/// before.
+///
+/// vello_cpu samples an image bilinearly per pixel per frame, and anyrender
+/// converts the whole source every frame too: a page with a figure painted in
+/// 30–95ms against 6ms for text, and a page turn paints two pages a frame, so
+/// the slide stuttered whenever an image came into view. Resampled once, with a
+/// proper filter, and drawn 1:1 with nearest sampling, it costs what text
+/// does — and loses nothing, since 1:1 nearest is exact. The same move as the
+/// library's covers (`net::FitCover`), made at paint time because a book
+/// image's size is only known after layout: measure, columns, font size and
+/// window all change it.
+fn fitted(src: &ImageData, w: u32, h: u32) -> ImageData {
+    if (w, h) == (src.width, src.height) {
+        return src.clone();
+    }
+    let ptr = src.data.data().as_ptr();
+    let hit = FITTED.with_borrow_mut(|cache| {
+        cache.retain(|(weak, _)| weak.upgrade().is_some());
+        let at = cache.iter().position(|(weak, img)| {
+            (img.width, img.height) == (w, h)
+                && weak.upgrade().is_some_and(|b| b.data().as_ptr() == ptr)
+        })?;
+        let entry = cache.remove(at);
+        let image = entry.1.clone();
+        cache.insert(0, entry);
+        Some(image)
+    });
+    if let Some(image) = hit {
+        return image;
+    }
+
+    let Some(view) = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(src.width, src.height, src.data.data())
+    else {
+        return src.clone();
+    };
+    let out = match w <= src.width && h <= src.height {
+        // Area averaging: the right filter for shrinking, and the fast one.
+        true => image::imageops::thumbnail(&view, w, h),
+        false => image::imageops::resize(&view, w, h, image::imageops::FilterType::Triangle),
+    };
+    let image = ImageData {
+        data: peniko::Blob::new(Arc::new(out.into_raw())),
+        width: w,
+        height: h,
+        ..src.clone()
+    };
+    FITTED.with_borrow_mut(|cache| {
+        cache.insert(0, (src.data.downgrade(), image.clone()));
+        cache.truncate(FITTED_MAX);
+    });
+    image
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn image(w: u32, h: u32, px: u8) -> ImageData {
+        ImageData {
+            data: peniko::Blob::new(Arc::new(vec![px; (w * h * 4) as usize])),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: w,
+            height: h,
+        }
+    }
+
+    /// An image is resampled once to the size it is drawn at, then reused —
+    /// resampling per frame would put back the cost this exists to remove.
+    #[test]
+    fn an_image_is_fitted_once_and_reused() {
+        let src = image(400, 200, 200);
+        let a = fitted(&src, 100, 50);
+        assert_eq!((a.width, a.height), (100, 50));
+        assert_eq!(a.data.data()[0], 200, "a flat image stays flat");
+        let b = fitted(&src, 100, 50);
+        assert_eq!(a.data.id(), b.data.id(), "the second draw is a cache hit");
+        // A new size is a new entry, and drawn at its own size nothing is done.
+        assert_eq!(fitted(&src, 200, 100).width, 200);
+        assert_eq!(fitted(&src, 400, 200).data.id(), src.data.id());
+    }
+
+    /// A chapter's images die with it; the cache must not hand their pixels
+    /// to whatever image comes next.
+    #[test]
+    fn a_dropped_image_is_never_matched() {
+        let gone = image(64, 64, 10);
+        fitted(&gone, 32, 32);
+        drop(gone);
+        let next = image(64, 64, 250);
+        assert_eq!(fitted(&next, 32, 32).data.data()[0], 250);
+    }
+
+    /// Painted through the page path, a scaled image arrives at its painted
+    /// size, unscaled — the whole point.
+    #[test]
+    fn a_scaled_image_is_drawn_one_to_one() {
+        struct Spy(Vec<(Affine, u32, u32)>);
+        impl PaintScene for Spy {
+            fn reset(&mut self) {}
+            fn push_layer(&mut self, _: impl Into<BlendMode>, _: f32, _: Affine, _: &impl Shape) {}
+            fn pop_layer(&mut self) {}
+            fn stroke<'a>(&mut self, _: &Stroke, _: Affine, _: impl Into<PaintRef<'a>>, _: Option<Affine>, _: &impl Shape) {}
+            fn fill<'a>(&mut self, _: Fill, t: Affine, brush: impl Into<PaintRef<'a>>, _: Option<Affine>, _: &impl Shape) {
+                if let Paint::Image(img) = brush.into() {
+                    self.0.push((t, img.image.width, img.image.height));
+                }
+            }
+            fn draw_glyphs<'a, 's: 'a>(
+                &'s mut self, _: &'a FontData, _: f32, _: bool, _: &'a [NormalizedCoord],
+                _: impl Into<StyleRef<'a>>, _: impl Into<PaintRef<'a>>, _: f32, _: Affine,
+                _: Option<Affine>, _: impl Iterator<Item = Glyph>,
+            ) {}
+            fn draw_box_shadow(&mut self, _: Affine, _: Rect, _: Color, _: f64, _: f64) {}
+        }
+
+        let mut spy = Spy(Vec::new());
+        let src = image(1000, 500, 0);
+        let brush = ImageBrush { image: &src, sampler: peniko::ImageSampler::default() };
+        let mut scene = Compose { inner: &mut spy, shift: Affine::translate((10.0, 0.0)), reset: false };
+        scene.draw_image(brush, Affine::translate((5.3, 7.0)).pre_scale(0.5));
+        assert_eq!(spy.0, vec![(Affine::translate((15.0, 7.0)), 500, 250)]);
     }
 }

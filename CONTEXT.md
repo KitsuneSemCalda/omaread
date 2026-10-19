@@ -1207,8 +1207,23 @@ while page turns and arrows took ~20ms. Three causes, all fixed:
 | A search keystroke | 120–190ms | 31–79ms |
 | Tab (sort) | 180–260ms | ~70ms |
 
-Not yet chased: some reading frames of ~185ms, seen once on page turns in a
-book opened from the grid — likely image pages through vello_cpu.
+**Page turns stuttered on any page with an image.** Measured headless through
+`paint::column` with the chapter's images loaded (Géron ch.12, 1526×1678): text
+pages 6ms, image pages **30–95ms**, and a turn paints two pages a frame. The
+cost was per pixel on screen, not per source pixel — shrinking the sources to
+the measure barely moved it, nearest sampling took it to 6–11ms — so it is
+vello_cpu's bilinear sampler again (§13), plus anyrender converting the whole
+source every frame (the 3175×3169 figure stayed at 25ms under nearest).
+
+`Compose` now draws every image through `paint::fitted`: resampled once, area
+averaged, to exactly the size it is painted at, cached (sixteen, weakly keyed
+on the source so a dead chapter's pixels are never reused), and copied 1:1 with
+nearest sampling, which at 1:1 is exact. Image pages now paint in **5–8ms**; the
+first frame that meets the biggest figure pays a one-off 16ms. It is also
+sharper: bilinear sampling a 5× larger source skipped pixels — broken plot
+lines, unreadable axis labels — where area averaging keeps them. Done at paint
+time rather than on load because a book image's size is only known after
+layout, and measure, columns, font size and window all change it.
 
 Still unfixed and now much smaller: covers are decoded at whatever size the
 publisher shipped. Downscaling at import (and §4's decoded LRU) would take the
