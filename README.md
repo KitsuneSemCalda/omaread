@@ -39,13 +39,19 @@ PDF is out of scope: [zathura](https://pwmt.org/projects/zathura/) does it well.
 
 ## Install
 
-### Arch Linux and Omarchy (AUR)
+### Arch Linux and Omarchy
+
+The AUR package, `omaread-git`, is on its way. Until then, build the same
+package from this repository:
 
 ```sh
-yay -S omaread-git
+git clone https://github.com/danielgccr/omaread.git
+cd omaread/packaging/aur
+makepkg -si
 ```
 
-The package builds from the latest commit. For the file pickers, "Show in
+The package builds from the latest commit, and installs the launcher entry
+and the Omarchy files described below. For the file pickers, "Show in
 folder" and moving removed books to the trash, you need `xdg-desktop-portal`,
 which Omarchy already has.
 
