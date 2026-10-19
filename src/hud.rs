@@ -111,7 +111,7 @@ pub fn context_html(selection: bool, on_highlight: bool, bookmarked: bool) -> St
 /// A footnote or a bibliography entry, shown where you are rather than by
 /// sending you to the page it lives on and leaving you to find your way back.
 pub fn note_html(text: &str) -> String {
-    format!(r#"<!DOCTYPE html><html><body><div class="note">{}</div></body></html>"#, escape(text))
+    format!(r#"<!DOCTYPE html><html><body><div class="gap"></div><div class="note">{}</div></body></html>"#, escape(text))
 }
 
 /// A figure on its own, over the page. `src` is already absolute.
@@ -155,9 +155,18 @@ html {{
   color: {fg};
 }}
 html *, html *::before, html *::after {{ box-sizing: inherit; }}
-html body {{ margin: 0; padding: 0 6vw; background: transparent; }}
+html body {{
+  margin: 0;
+  padding: 0 6vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+}}
+/* A short note sits a quarter down; a long one takes the room back. */
+html .gap {{ flex: 0 1 26vh; min-height: 3vh; }}
 html .note {{
-  margin-top: 26vh;
+  flex: none;
   padding: 22px 26px;
   border: 1px solid {border};
   background: {bg};

@@ -262,6 +262,8 @@ us while blitz-dom is pre-1.0.
   skeletons — the two things that matter. A hybrid `.mobi` (MOBI 6 + KF8) is
   read through its MOBI 6 half.
 - Config in `~/.config/omaread/`. Cache: nowhere.
+- Exported highlights go to `~/.local/share/omaread/highlights/`, beside the
+  library, never into a watched folder.
 - Watched folders live in `~/.config/omaread/folders.txt`, one path per line,
   seeded with `~/Documents` and `~/Downloads` on first run. A newline list rather
   than TOML: it holds paths and nothing else.
@@ -364,6 +366,17 @@ installed here.
 
 ponytail: no bounds on the nodes. A magnifier following focus, or Orca's
 flat review, would need `set_bounds`.
+
+**Right-to-left and vertical text are in scope.** Omaread will read more
+languages than en/es/ca, so Arabic, Hebrew and Persian (RTL), and Japanese
+and Chinese vertical writing (`writing-mode: vertical-rl`), are to be built,
+not rejected. Not started. What assumes left-to-right horizontal flow today:
+the paginator (pages are Y ranges of one vertical flow), the page-turn slide
+and the arrow keys (forward is leftwards), two columns (left page first),
+selection and highlight rectangles, the hit-test probes, and the
+`page-progression-direction` the OPF spine may declare and is ignored. Parley
+shapes bidi text already; whether blitz-dom and Taffy lay out `direction: rtl`
+and vertical writing modes has to be measured before anything is designed.
 
 ## 8. Status
 
@@ -813,6 +826,34 @@ all through the existing popup (the next click or key puts it away):
 A note popup is laid out again, not dropped, when the window changes: the
 fixed-layout notice arrives just as Hyprland rescales a new window, and was
 lost to that.
+
+**Polish: four shortcuts removed, one export.**
+
+- **A page turn slides across chapter boundaries.** The chapter being left is
+  kept in `slide_from` for the 160ms it takes to slide off, painted from its
+  own document beside the new chapter's first (or last) page, then dropped.
+  A turn within one chapter clears it. The slide starts once the next chapter
+  is loaded, so a slow chapter delays the turn but does not eat it.
+- **Long footnotes open in the popup.** The test for a note was 700
+  characters; it is now *does it fit the window*. The popup is laid out, and a
+  note taller than the window goes to its page as before. The note sits a
+  quarter down the window when short and rises as it grows (a spacer that
+  shrinks to 3vh). A target holding a heading is a section whatever its
+  length, and 5000 characters bounds what is worth laying out at all.
+  Paragraph breaks inside a note are still lost: `text_of` joins blocks with
+  a space.
+- **The context menu is measured.** It is laid out once at the top, its
+  height read, and laid out again where it fits: a translated row that wraps
+  no longer pushes it past the window's foot.
+- **The settings panel follows a text-size change.** Its anchor is stored in
+  page pixels and converted to chrome pixels each time the panel is built, so
+  F5 picking up a new Omarchy text size places it correctly without reopening.
+- **`e` in the marks list exports to Markdown**:
+  `~/.local/share/omaread/highlights/Author - Title.md`, a popup saying where.
+  The title, the author, then a `##` per chapter (named from the book's
+  navigation, as search hits are), each highlight as a quote with its note
+  under it. A bookmark is listed only when it carries a note. Re-exporting
+  overwrites, since the database holds the record.
 
 ## 9. Spike findings (verified, not assumed)
 

@@ -70,6 +70,8 @@ toc-search-hits = “{ $query }” — { $n ->
 mark-bookmark = Bookmark
 mark-highlight = Highlight
 mark-chapter = chapter { $n }
+marks-exported = Highlights and notes saved to { $path }
+marks-export-failed = Could not save the highlights: { $error }
 chapter-n = Chapter { $n }
 
 ## Screen reader: names for controls that show a glyph or nothing
@@ -118,4 +120,5 @@ help-go = Go there
 help-back = Back to the book
 help-note = Write a note
 help-delete = Delete
+help-export = Export highlights to Markdown
 help-help = These keys

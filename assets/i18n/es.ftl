@@ -73,6 +73,8 @@ toc-search-hits = «{ $query }» — { $n ->
 mark-bookmark = Marcador
 mark-highlight = Resaltado
 mark-chapter = capítulo { $n }
+marks-exported = Resaltados y notas guardados en { $path }
+marks-export-failed = No se pudieron guardar los resaltados: { $error }
 chapter-n = Capítulo { $n }
 
 ## Lector de pantalla: nombres de controles que muestran un glifo o nada
@@ -121,4 +123,5 @@ help-go = Ir allí
 help-back = Volver al libro
 help-note = Escribir una nota
 help-delete = Borrar
+help-export = Exportar resaltados a Markdown
 help-help = Estas teclas

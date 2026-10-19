@@ -675,6 +675,16 @@ pub fn tag_of(dom: &BaseDocument, id: usize) -> Option<String> {
     }
 }
 
+/// Is `id`, or anything under it, a heading? A note never holds one; a
+/// section starts with one.
+pub fn has_heading(dom: &BaseDocument, id: usize) -> bool {
+    let mut found = false;
+    walk_elements(dom, id, &mut |_, el| {
+        found |= matches!(el.name.local.as_ref(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6");
+    });
+    found
+}
+
 /// All the laid-out text under a node, as one string.
 pub fn text_of(dom: &BaseDocument, id: usize) -> String {
     let mut out = String::new();

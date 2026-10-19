@@ -715,6 +715,12 @@ pub fn library_dir() -> PathBuf {
     data_dir().join("library")
 }
 
+/// Where exported highlights go: beside the library, never into a watched
+/// folder (§4).
+pub fn highlights_dir() -> PathBuf {
+    data_dir().join("highlights")
+}
+
 /// SHA-256 of a file, streamed.
 pub fn file_hash(path: impl AsRef<Path>) -> Result<String, String> {
     let mut f = std::fs::File::open(path.as_ref()).map_err(|e| e.to_string())?;

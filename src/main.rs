@@ -224,9 +224,69 @@ mod tests {
         assert!(!super::is_note("h2", "Capítulo 4"));
         assert!(!super::is_note("section", "Capítulo 4"));
         // So is a whole chapter that happens to sit in a <div>.
-        assert!(!super::is_note("div", &"palabra ".repeat(200)));
+        assert!(!super::is_note("div", &"palabra ".repeat(1000)));
+        // A long footnote is still a note; whether it fits is the popup's call.
+        assert!(super::is_note("aside", &"palabra ".repeat(200)));
         // And an empty target says nothing worth a popup.
         assert!(!super::is_note("p", "   "));
+    }
+
+    /// A short note sits a quarter down the window; a long one moves up to fit,
+    /// and one taller than the window overflows it, which is what sends the
+    /// reader to its page instead.
+    #[test]
+    fn a_long_note_moves_up_until_it_cannot_fit() {
+        let note_box = |words: usize| {
+            let doc = crate::chapter::layout_document(
+                crate::hud::note_html(&"palabra ".repeat(words)),
+                crate::hud::note_stylesheet(&crate::style::ReadingStyle::default().chrome()),
+                None,
+                crate::chapter::viewport(900, 800, 1.0, false),
+                800.0,
+            )
+            .expect("the note must lay out");
+            let n = super::find_by_attr(doc.dom(), 0, "class", "note").expect("no note");
+            let (_, y, _, h) = crate::chapter::node_rect(doc.dom(), n).expect("no box");
+            (y, y + h)
+        };
+        let (top, _) = note_box(10);
+        assert!((top - 208.0).abs() < 1.0, "a short note sits at 26vh, not {top}");
+        let (top, bottom) = note_box(250);
+        assert!(top < 208.0 && bottom <= 800.0, "a long one moves up and fits: {top}..{bottom}");
+        let (_, bottom) = note_box(3000);
+        assert!(bottom > 800.0, "too long to fit runs off the window");
+    }
+
+    /// Highlights land under their chapter in reading order, notes under the
+    /// words they are about, and a bookmark only when it says something.
+    #[test]
+    fn marks_export_as_markdown_by_chapter() {
+        let entry = |label: &str, spine| crate::book::TocEntry {
+            label: label.into(),
+            depth: 0,
+            spine,
+            fragment: None,
+            find: None,
+            cfi: None,
+        };
+        let mark = |cfi: &str, length, text: &str, note: &str| crate::db::Mark {
+            cfi: cfi.into(),
+            length,
+            text: text.into(),
+            note: note.into(),
+            ..Default::default()
+        };
+        let toc = [entry("Uno", 1), entry("Dos", 3)];
+        let marks = [
+            mark("epubcfi(/6/4!/4/2:0)", 5, "Hola\nmundo", ""),
+            mark("epubcfi(/6/4!/4/6)", 0, "", ""),
+            mark("epubcfi(/6/6!/4/2:3)", 3, "otra", "Mi nota"),
+            mark("epubcfi(/6/8!/4/2)", 0, "", "Volver aquí"),
+        ];
+        assert_eq!(
+            super::marks_markdown("Libro", "Autora", &toc, &marks),
+            "# Libro\n\n*Autora*\n\n## Uno\n\n> Hola\n> mundo\n\n> otra\n\nMi nota\n\n## Dos\n\nVolver aquí\n"
+        );
     }
 
     /// The page you left goes the way you turned, and the one arriving comes
@@ -436,7 +496,7 @@ fn main() {
                        move the mouse for the menus: marks, contents, size, columns\n\
              Contents: ↑/↓ select · Enter go · Tab or Esc back\n\
              Marks:    m list · b bookmark · drag to select · right-click menu · h highlight · y copy\n\
-                       in the list: n note · x delete"
+                       in the list: n note · x delete · e export to Markdown"
         );
         return;
     }
@@ -536,15 +596,14 @@ struct App {
     /// The settings panel over the library, and the folder path being typed
     /// into it, if any.
     menu: Option<Chapter>,
-    /// Where the panel was anchored when it opened, in window CSS pixels.
+    /// Where the panel was anchored when it opened, in page CSS pixels.
     menu_at: Option<(f32, f32)>,
     adding_folder: Option<String>,
     /// A page turn in flight: the page being left, and which way it went.
-    ///
-    /// ponytail: within one chapter only. Turning across a chapter boundary
-    /// loads a different document and the outgoing page is already gone, so
-    /// that turn cuts. Keep both documents alive if it ever grates.
     slide: Option<Slide>,
+    /// The chapter that page is in, when the turn crossed into another one.
+    /// Kept only while it slides off; `None` means the page is in `chapter`.
+    slide_from: Option<Chapter>,
     /// A tag being typed for the selected book. Tagging borrows the search box.
     tagging: Option<String>,
     /// The contents list. Rebuilt on every open and on every selection move.
@@ -659,6 +718,7 @@ impl App {
             a11y: None,
             proxy: None,
             slide: None,
+            slide_from: None,
             back: None,
             popup: None,
             menu: None,
@@ -1128,6 +1188,20 @@ impl App {
         }
     }
 
+    /// Write the book's highlights and notes to a Markdown file of its own,
+    /// beside the library, and say where.
+    fn export_marks(&mut self) {
+        let Some(book) = &self.book else { return };
+        let md = marks_markdown(&book.title, &book.author, &book.toc, &self.marks);
+        let dir = db::highlights_dir();
+        let path = dir.join(library::canonical_name(&book.author, &book.title, "md"));
+        let said = match std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, md)) {
+            Ok(()) => i18n::tr!("marks-exported", path = path.display().to_string()),
+            Err(e) => i18n::tr!("marks-export-failed", error = e.to_string()),
+        };
+        self.open_note(&said);
+    }
+
     fn begin_note(&mut self) {
         let Some(mark) = self.marks.get(self.toc_sel) else { return };
         self.note = mark.note.clone();
@@ -1310,33 +1384,32 @@ impl App {
     /// shelf where the cog is *while it was gone* jumped to the left margin.
     fn open_menu(&mut self) {
         // The cog is in the shelf's flow, and the shelf is a page, so its window
-        // position is the flow position plus the page margin. Clamped so a cog
-        // near the right edge does not hang the panel off the screen.
-        // The cog is in page pixels and the panel is chrome, laid out at
-        // `ui_scale`; `ui` is the step between the two.
-        let ui = self.ui;
-        let win_w = self.size.0 as f32 / self.ui_scale();
+        // position is the flow position plus the page margin.
         let margin = self.page_margin();
         self.menu_at = self
             .lib_doc
             .as_ref()
             .and_then(|d| find_by_attr(d.dom(), 0, "data-icon", "gear"))
             .and_then(|n| chapter::node_rect(self.lib_doc.as_ref()?.dom(), n))
-            .map(|(x, y, _, h)| {
-                (
-                    ((x - 10.0) / ui).clamp(
-                        grid::SIDE_PAD as f32,
-                        (win_w - grid::MENU_W - grid::SIDE_PAD as f32).max(0.0),
-                    ),
-                    (y + h + margin) / ui + 10.0,
-                )
-            });
+            .map(|(x, y, _, h)| (x - 10.0, y + h + margin));
         self.build_menu();
     }
 
     /// Lay out the settings panel where `open_menu` put it.
     fn build_menu(&mut self) {
-        let (left, top) = self.menu_at.unwrap_or((grid::SIDE_PAD as f32, 74.0));
+        // The anchor is in page pixels and the panel is chrome, laid out at
+        // `ui_scale`; `ui` is the step between the two. Taken here, not when
+        // the panel opened, so F5 picking up a new text size moves it with the
+        // cog. Clamped so a cog near the right edge does not hang the panel off
+        // the screen.
+        let ui = self.ui;
+        let win_w = self.size.0 as f32 / self.ui_scale();
+        let (left, top) = self.menu_at.map_or((grid::SIDE_PAD as f32, 74.0), |(x, y)| {
+            (
+                (x / ui).min(win_w - grid::MENU_W - grid::SIDE_PAD as f32).max(grid::SIDE_PAD as f32),
+                y / ui + 10.0,
+            )
+        });
         let folders: Vec<String> =
             library::folders().iter().map(|p| p.display().to_string()).collect();
         let html = grid::menu_html(
@@ -1483,22 +1556,27 @@ impl App {
             self.page_bookmarked(),
         );
 
-        // ponytail: height estimated from the row count, not measured. Measure
-        // the laid-out panel if a row ever wraps.
-        let rows = html.matches("data-set").count() as f32;
         let (win_w, win_h) = (self.size.0 as f32 / self.ui_scale(), self.size.1 as f32 / self.ui_scale());
         let (x, y) = self.pointer_in_ui();
         let left = x.min(win_w - hud::CONTEXT_W - 8.0).max(0.0);
-        let top = y.min(win_h - rows * 34.0 - 32.0).max(0.0);
 
+        // Laid out once at the top to measure it, then again where it fits: a
+        // translated row that wraps makes it taller than its row count says.
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
-        self.menu = chapter::layout_document(
-            html,
-            grid::menu_stylesheet(&self.chrome(), left, top, hud::CONTEXT_W),
-            None,
-            vp,
-            self.page_height(),
-        );
+        let chrome = self.chrome();
+        let lay = |top: f32| {
+            chapter::layout_document(
+                html.clone(),
+                grid::menu_stylesheet(&chrome, left, top, hud::CONTEXT_W),
+                None,
+                vp.clone(),
+                self.page_height(),
+            )
+        };
+        let height = lay(0.0)
+            .and_then(|m| chapter::node_rect(m.dom(), find_by_attr(m.dom(), 0, "class", "menu")?))
+            .map_or(0.0, |(_, _, _, h)| h);
+        self.menu = lay(y.min(win_h - height - 8.0).max(0.0));
         self.hover_menu = None;
         self.request_redraw();
     }
@@ -1562,7 +1640,11 @@ impl App {
 
         if let Some(text) = self.note_at(spine, frag.as_deref()) {
             self.open_note(&text);
-            return true;
+            if self.note_fits() {
+                return true;
+            }
+            // Taller than the window: it is read where it lives.
+            self.popup = None;
         }
 
         self.back = Some((self.index, self.page, self.here_label()));
@@ -1625,7 +1707,17 @@ impl App {
         let node = find_by_attr(ch.dom(), 0, "id", frag)?;
         let tag = chapter::tag_of(ch.dom(), node)?;
         let text = chapter::text_of(ch.dom(), node);
-        is_note(&tag, &text).then_some(text)
+        (is_note(&tag, &text) && !chapter::has_heading(ch.dom(), node)).then_some(text)
+    }
+
+    /// Does the note popup show the whole note? A long one is still a note, as
+    /// long as it can be read without scrolling.
+    fn note_fits(&self) -> bool {
+        let Some(p) = self.popup.as_ref() else { return false };
+        let win_h = self.size.1 as f32 / self.ui_scale();
+        find_by_attr(p.dom(), 0, "class", "note")
+            .and_then(|n| chapter::node_rect(p.dom(), n))
+            .is_some_and(|(_, y, _, h)| y + h <= win_h)
     }
 
     /// F1 anywhere; `?` wherever it is not text being typed — the library's
@@ -1684,6 +1776,7 @@ impl App {
                 if self.toc_mode == TocMode::Marks {
                     rows.push(("n", tr!("help-note")));
                     rows.push(("x", tr!("help-delete")));
+                    rows.push(("e", tr!("help-export")));
                 }
                 if self.toc_mode != TocMode::Search {
                     rows.push(("l", tr!("help-library")));
@@ -2313,13 +2406,7 @@ impl App {
             .map(|hit| {
                 // Name the chapter from the book's own navigation when it has
                 // one: "Chapter 4 · …the words…" beats a bare snippet.
-                let where_ = book
-                    .toc
-                    .iter()
-                    .filter(|e| e.spine <= hit.spine)
-                    .next_back()
-                    .map(|e| e.label.clone())
-                    .unwrap_or_else(|| i18n::tr!("chapter-n", n = hit.spine + 1));
+                let where_ = chapter_name(&book.toc, hit.spine);
                 book::TocEntry {
                     label: format!("{where_} · {}", hit.snippet),
                     depth: 0,
@@ -2658,23 +2745,37 @@ impl App {
     fn turn(&mut self, forward: bool) {
         let step = self.effective_columns();
         let was = self.page;
-        if forward {
+        let into = if forward {
             let last = self.page_count().saturating_sub(1);
             if self.page + step <= last {
                 self.page += step;
-                self.slide = Some(Slide { from: was, forward, at: Instant::now() });
+                None
             } else if self.index + 1 < self.chapter_count() {
-                self.load_chapter(self.index + 1);
+                Some(self.index + 1)
             } else {
                 return;
             }
         } else if self.page >= step {
             self.page -= step;
-            self.slide = Some(Slide { from: was, forward, at: Instant::now() });
+            None
         } else if self.index > 0 {
-            self.load_chapter_at(self.index - 1, true);
+            Some(self.index - 1)
         } else {
             return;
+        };
+        self.slide_from = None;
+        // Hold on to the chapter being left, so its page can slide off while
+        // the next chapter's slides in.
+        if let Some(index) = into {
+            let from = self.chapter.take();
+            self.load_chapter_at(index, !forward);
+            match self.chapter.is_some() {
+                true => self.slide_from = from,
+                false => self.chapter = from,
+            }
+        }
+        if into.is_none() || self.slide_from.is_some() {
+            self.slide = Some(Slide { from: was, forward, at: Instant::now() });
         }
         // ponytail: a write per page turn. WAL makes it cheap; batch only if it
         // ever shows up in a profile.
@@ -2919,7 +3020,7 @@ impl App {
             let t = s.at.elapsed().as_secs_f32() / SLIDE.as_secs_f32();
             (t < 1.0).then(|| (s, 1.0 - (1.0 - t) * (1.0 - t)))
         });
-        let App { renderer, chapter, lib_doc, toc_doc, hud_doc, popup, menu, view, .. } = self;
+        let App { renderer, chapter, slide_from, lib_doc, toc_doc, hud_doc, popup, menu, view, .. } = self;
         let hud = if showing_hud { hud_doc.as_mut() } else { None };
         let Some(ch) = (match view {
             View::Library => lib_doc.as_mut(),
@@ -2948,14 +3049,18 @@ impl App {
             .collect();
         // The page being left, in the same flow: a turn within one chapter is
         // two slices of one document, which is exactly what two columns are.
+        // Across a boundary it is a slice of the chapter before.
         let outgoing: Vec<(f32, f32)> = match slide {
-            Some((s, _)) => (0..cols)
-                .map(|c| s.from + c)
-                .map(|p| match p < count {
-                    true => (ch.pages.top_of(p), ch.pages.extent_of(p)),
-                    false => (0.0, 0.0),
-                })
-                .collect(),
+            Some((s, _)) => {
+                let from = slide_from.as_ref().unwrap_or(&*ch);
+                (0..cols)
+                    .map(|c| s.from + c)
+                    .map(|p| match p < from.pages.count() {
+                        true => (from.pages.top_of(p), from.pages.extent_of(p)),
+                        false => (0.0, 0.0),
+                    })
+                    .collect()
+            }
             None => Vec::new(),
         };
         let doc = &mut ch.doc;
@@ -2981,11 +3086,17 @@ impl App {
                     // follows it in. Both are the same document at two offsets.
                     let (out_x, in_x) = slide_offsets(s.forward, t, w as f32 / scale as f32);
                     paint::clear(scene, ground, &frame);
-                    for (dx, pages) in [(out_x, &outgoing), (in_x, &slices)] {
-                        for (col, &(top, extent)) in pages.iter().enumerate() {
-                            let x = dx + col as f32 * col_w;
-                            paint::column(scene, doc, top, extent, x, col_w, &frame, ground, false);
-                        }
+                    for (col, &(top, extent)) in outgoing.iter().enumerate() {
+                        let x = out_x + col as f32 * col_w;
+                        let doc = match slide_from.as_mut() {
+                            Some(from) => &mut from.doc,
+                            None => &mut *doc,
+                        };
+                        paint::column(scene, doc, top, extent, x, col_w, &frame, ground, false);
+                    }
+                    for (col, &(top, extent)) in slices.iter().enumerate() {
+                        let x = in_x + col as f32 * col_w;
+                        paint::column(scene, doc, top, extent, x, col_w, &frame, ground, false);
                     }
                 } else {
                 for (col, &(top, extent)) in slices.iter().enumerate() {
@@ -3431,6 +3542,7 @@ impl App {
             Key::Character(c) if self.toc_mode == TocMode::Marks => match c.as_str() {
                 "n" => self.begin_note(),
                 "x" => self.delete_mark(),
+                "e" => self.export_marks(),
                 "q" => {
                     self.save_position();
                     event_loop.exit();
@@ -3527,13 +3639,54 @@ fn href_at(doc: &blitz_html::HtmlDocument, x: f32, y: f32) -> Option<String> {
 /// test — `epub:type="noteref"`, which a spec would key on, is carried by 4
 /// books of 60 sampled from the real library, so it cannot be the rule.
 ///
-/// ponytail: a length cut-off. A very long footnote goes to its page like a
-/// section; key on `epub:type`/`role` as well if a real book gets it wrong.
+/// The cut-off is only a bound on what is worth laying out as a popup: a note
+/// is shown when it fits the window (`note_fits`), and a target holding a
+/// heading is a section whatever its length (`chapter::has_heading`).
+///
+/// ponytail: length and headings. Key on `epub:type`/`role` as well if a real
+/// book gets it wrong.
 fn is_note(tag: &str, text: &str) -> bool {
-    const NOTE_MAX: usize = 700;
+    const NOTE_MAX: usize = 5000;
     matches!(tag, "p" | "li" | "aside" | "div" | "span" | "td")
         && !text.trim().is_empty()
         && text.chars().count() <= NOTE_MAX
+}
+
+/// The chapter `spine` falls in, by the book's own navigation when it has some.
+fn chapter_name(toc: &[book::TocEntry], spine: usize) -> String {
+    toc.iter()
+        .filter(|e| e.spine <= spine)
+        .next_back()
+        .map(|e| e.label.clone())
+        .unwrap_or_else(|| i18n::tr!("chapter-n", n = spine + 1))
+}
+
+/// A book's highlights and notes as Markdown, in reading order, under the
+/// chapter each falls in. A bookmark has no words, so it is only worth a line
+/// when it carries a note.
+fn marks_markdown(title: &str, author: &str, toc: &[book::TocEntry], marks: &[db::Mark]) -> String {
+    let mut out = format!("# {title}\n");
+    if !author.is_empty() {
+        out += &format!("\n*{author}*\n");
+    }
+    let mut heading = None;
+    for m in marks.iter().filter(|m| !m.is_bookmark() || !m.note.is_empty()) {
+        let here = chapter_name(toc, cfi::Cfi::parse(&m.cfi).map_or(0, |c| c.spine));
+        if heading.as_ref() != Some(&here) {
+            out += &format!("\n## {here}\n");
+            heading = Some(here);
+        }
+        if !m.text.is_empty() {
+            out += "\n";
+            for line in m.text.lines() {
+                out += &format!("> {line}\n");
+            }
+        }
+        if !m.note.is_empty() {
+            out += &format!("\n{}\n", m.note);
+        }
+    }
+    out
 }
 
 /// Where the outgoing and incoming pages sit, `t` of the way through a turn.
@@ -3867,7 +4020,7 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
                 // A page turn animates, so it drives the clock while it lasts.
                 if let Some(s) = self.slide {
                     match s.at.elapsed() >= SLIDE {
-                        true => self.slide = None,
+                        true => (self.slide, self.slide_from) = (None, None),
                         false => wake.push(Some(now + FRAME)),
                     }
                     self.request_redraw();
