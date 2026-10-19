@@ -501,7 +501,7 @@ not need a restart. A value that is not a `#rrggbb` is refused rather than
 passed on — an unrendered `{{ background }}` would otherwise paint the library
 black.
 
-`assets/omarchy/omaread.conf` is the suggested Hyprland window rule and
+`assets/omarchy/omaread.lua` is the suggested Hyprland window rule and
 keybinding. Writing it turned up a real bug: the window had **no `app_id` at
 all**, so every rule keyed on `class:` would have silently never matched. winit
 does not set one unless asked; it is set now, and `hyprctl clients` reports
