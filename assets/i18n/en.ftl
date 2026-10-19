@@ -72,7 +72,7 @@ toc-search-hits = “{ $query }” — { $n ->
 } in this book
 mark-bookmark = Bookmark
 mark-highlight = Highlight
-mark-chapter = chapter { $n }
+mark-page = page { $n }
 marks-exported = Highlights and notes saved to { $path }
 marks-export-failed = Could not save the highlights: { $error }
 chapter-n = Chapter { $n }
@@ -88,6 +88,7 @@ settings-drop-folder = Stop scanning { $folder }
 
 ## Notices
 
+columns-too-narrow = The window is too narrow for two columns. Widen it, or make the text smaller, and the second column appears.
 fixed-layout-notice = This book is laid out page by page, like a comic or a picture book. Omaread reflows it into its own pages, so it will not look as it was designed.
 a11y-figure = Figure
 link-leave = This link leaves the book for { $url }. Press Enter to open it in your browser; any other key or a click stays here.

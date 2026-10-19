@@ -640,6 +640,8 @@ struct App {
     toc_mode: TocMode,
     /// Marks for the open book; index-aligned with the list while in Marks mode.
     marks: Vec<db::Mark>,
+    /// Where each bookmark falls, by mark id, worked out as the list opens.
+    bookmark_places: std::collections::HashMap<i64, String>,
     /// Live selection, anchor then focus, each as (text element, byte). The two
     /// may sit in different paragraphs.
     sel: Option<((usize, usize), (usize, usize))>,
@@ -746,6 +748,7 @@ impl App {
             find: String::new(),
             toc_mode: TocMode::Contents,
             marks: Vec::new(),
+            bookmark_places: Default::default(),
             sel: None,
             dragging: false,
             noting: None,
@@ -1057,8 +1060,51 @@ impl App {
     /// Marks, selection, notes and copy — everything Phase 7 adds.
     fn open_marks(&mut self) {
         self.marks = self.load_marks();
+        self.bookmark_places = self.bookmark_places();
         self.toc_mode = TocMode::Marks;
         self.open_toc();
+    }
+
+    /// Where each bookmark falls, in the readout's own terms: the book's page
+    /// once pages are measured, a percentage until then. Worked out while still
+    /// in the reading view, because that is the layout the numbers belong to.
+    ///
+    /// ponytail: lays out every other chapter holding a bookmark on the window's
+    /// thread, ~25 ms each; store the place with the mark if a book ever
+    /// collects dozens.
+    fn bookmark_places(&self) -> std::collections::HashMap<i64, String> {
+        let mut places = std::collections::HashMap::new();
+        let Some(book) = &self.book else { return places };
+        let mut others = std::collections::HashMap::new();
+        for m in self.marks.iter().filter(|m| m.is_bookmark()) {
+            let Some(c) = cfi::Cfi::parse(&m.cfi) else { continue };
+            let ch = match &self.chapter {
+                Some(ch) if ch.index == c.spine => ch,
+                _ => {
+                    let laid = others.entry(c.spine).or_insert_with(|| {
+                        let (w, h, ph) = (self.column_width(), self.size.1, self.page_height());
+                        let hy = self.hyphenator.as_ref();
+                        chapter::load_offscreen(book, c.spine, &self.style, hy, w, h, self.scale, ph)
+                    });
+                    let Some(ch) = laid.as_ref() else { continue };
+                    ch
+                }
+            };
+            let Some(y) = chapter::top_of_cfi(ch, &c) else { continue };
+            let page = ch.pages.page_containing(y);
+            let place = match self.measured_pages() {
+                Some(per) => {
+                    let before: usize = per.iter().take(c.spine).sum();
+                    i18n::tr!("mark-page", n = before + page + 1)
+                }
+                None => {
+                    let within = ch.pages.top_of(page) / ch.pages.content_height.max(1.0);
+                    format!("{}%", (book.progress(c.spine, within) * 100.0).round() as u8)
+                }
+            };
+            places.insert(m.id, place);
+        }
+        places
     }
 
     fn load_marks(&self) -> Vec<db::Mark> {
@@ -1069,12 +1115,16 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// CFI of the element this page begins at — the anchor for a bookmark, and
-    /// the same one reading progress uses.
+    /// CFI of the character this page begins at — the anchor for a bookmark,
+    /// and the same one reading progress uses. Without the character a page
+    /// that starts mid-paragraph is the paragraph's first page.
     fn cfi_of_page(&self) -> Option<cfi::Cfi> {
         let ch = self.chapter.as_ref()?;
-        let node = chapter::node_at(ch.dom(), ch.pages.top_of(self.page))?;
-        cfi::of_node(ch.dom(), node, self.index)
+        let top = ch.pages.top_of(self.page);
+        let node = chapter::node_at(ch.dom(), top)?;
+        let mut c = cfi::of_node(ch.dom(), node, self.index)?;
+        c.offset = chapter::char_at(ch.dom(), node, top);
+        Some(c)
     }
 
     /// Whether the page on screen carries a bookmark. One indexed lookup, so
@@ -2189,6 +2239,11 @@ impl App {
         if self.show_page {
             self.measure_book();
         }
+        // Asked for two and got one: say why, or the key looks broken. Only
+        // here, on the key; a window dragged narrower falls back silently.
+        if self.columns == 2 && got == 1 {
+            self.open_note(&i18n::tr!("columns-too-narrow"));
+        }
         self.request_redraw();
     }
 
@@ -2482,11 +2537,18 @@ impl App {
                             true => i18n::tr!("mark-bookmark"),
                             false => i18n::tr!("mark-highlight"),
                         };
-                        let body = match (m.text.is_empty(), m.note.is_empty()) {
-                            (true, true) => i18n::tr!("mark-chapter", n = spine + 1),
-                            (true, false) => m.note.clone(),
-                            (false, true) => m.text.clone(),
-                            (false, false) => format!("{} — {}", m.text, m.note),
+                        // A bookmark has no words of its own: it reads as where it is.
+                        let text = match m.is_bookmark() {
+                            true => self
+                                .bookmark_places
+                                .get(&m.id)
+                                .cloned()
+                                .unwrap_or_else(|| chapter_name(&book.toc, spine)),
+                            false => m.text.clone(),
+                        };
+                        let body = match m.note.is_empty() {
+                            true => text,
+                            false => format!("{text} — {}", m.note),
                         };
                         book::TocEntry {
                             label: format!("{kind} · {body}"),
@@ -2552,7 +2614,10 @@ impl App {
     /// one — books that keep several chapters in one spine file would otherwise
     /// send every entry to page 1.
     fn open_toc_entry(&mut self, i: usize) {
-        let Some(entry) = self.book.as_ref().and_then(|b| b.toc.get(i).cloned()) else { return };
+        // The entry the list shows: in marks or search that is not the book's
+        // contents, and indexing those sent a mark to whatever chapter shared
+        // its position in the list.
+        let Some(entry) = self.toc_entries().get(i).cloned() else { return };
         if self.chapter.is_some() {
             self.back = Some((self.index, self.resume_page, self.here_label()));
             self.hud_doc = None;
@@ -2563,14 +2628,12 @@ impl App {
         } else {
             self.load_chapter(entry.spine);
         }
-        // A stored mark knows its element exactly.
+        // A stored mark knows its element, and a highlight its character.
         if let Some(raw) = &entry.cfi {
-            match cfi::Cfi::parse(raw)
-                .and_then(|c| {
-                    let ch = self.chapter.as_ref()?;
-                    let node = cfi::resolve(ch.dom(), &c)?;
-                    Some(ch.pages.page_containing(chapter::node_top(ch.dom(), node)?))
-                }) {
+            match cfi::Cfi::parse(raw).and_then(|c| {
+                let ch = self.chapter.as_ref()?;
+                Some(ch.pages.page_containing(chapter::top_of_cfi(ch, &c)?))
+            }) {
                 Some(page) => self.page = page,
                 None => eprintln!("omaread: {raw} no longer resolves"),
             }
@@ -2613,9 +2676,9 @@ impl App {
     }
 
     fn move_toc_selection(&mut self, by: isize) {
-        let last = match self.book.as_ref().map(|b| b.toc.len()) {
-            Some(n) if n > 0 => n as isize - 1,
-            _ => return,
+        let last = match self.toc_entries().len() {
+            0 => return,
+            n => n as isize - 1,
         };
         self.toc_sel = (self.toc_sel as isize + by).clamp(0, last) as usize;
         // Follow the selection onto its page.
@@ -2698,21 +2761,14 @@ impl App {
             return;
         }
         let Some(ch) = &self.chapter else { return };
-        let Some(node) = cfi::resolve(ch.dom(), &c) else {
-            eprintln!("omaread: saved position no longer resolves; starting at the top");
-            return;
-        };
         // The character the page began on, when the saved position names one;
         // the paragraph's own top otherwise.
-        let y = c
-            .offset
-            .and_then(|off| {
-                chapter::highlight_rects(ch.dom(), node, off, 1).first().map(|r| r.1)
-            })
-            .or_else(|| chapter::node_top(ch.dom(), node));
-        if let Some(y) = y {
-            self.page = ch.pages.page_containing(y);
-            println!("omaread: resumed at page {} of {}", self.page + 1, ch.pages.count());
+        match chapter::top_of_cfi(ch, &c) {
+            Some(y) => {
+                self.page = ch.pages.page_containing(y);
+                println!("omaread: resumed at page {} of {}", self.page + 1, ch.pages.count());
+            }
+            None => eprintln!("omaread: saved position no longer resolves; starting at the top"),
         }
     }
 

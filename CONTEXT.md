@@ -199,7 +199,9 @@ The model:
   from the single flow. It is *not* CSS `column-count`. This is strictly better
   for a reader: the columns are pages you turn, not a scroll that snakes.
 - Two-column **auto-disables below ~70em of available width** rather than
-  squeezing into unreadable ~38ch columns.
+  squeezing into unreadable ~38ch columns. Pressing `c` into that says so in a
+  note; a window dragged narrower falls back silently, and widening it (or
+  smaller text) brings the second column back.
 - Widows/orphans and "never break directly after a heading" are **paginator
   rules**, not CSS. The `orphans`/`widows` properties do not exist here.
 - Table page breaks: repeat the header row on each continuation page.

@@ -408,29 +408,50 @@ pub fn page_counts(
     scale: f32,
     page_height: f32,
 ) -> Vec<usize> {
-    let dark = style.dark();
-    let (tx, rx) = std::sync::mpsc::channel();
-
+    // A chapter the engine cannot lay out contributes no pages; it is skipped
+    // when reading, too.
     (0..book.chapter_count())
         .map(|i| {
-            let cb: SharedCallback<Resource> = Arc::new(CollectCallback(tx.clone()));
-            let vp = viewport(width, height, scale, dark);
-            match load(book, i, style, vp, page_height, hyphenator, cb) {
-                Ok(mut ch) => {
-                    // Images change how much fits, and the in-zip provider
-                    // answers immediately, so take what arrived before counting.
-                    for resource in rx.try_iter() {
-                        let _ = catch_unwind(AssertUnwindSafe(|| ch.doc.load_resource(resource)));
-                    }
-                    relayout(&mut ch, viewport(width, height, scale, dark), page_height);
-                    ch.pages.count()
-                }
-                // A chapter the engine cannot lay out contributes no pages; it is
-                // skipped when reading, too.
-                Err(_) => 0,
-            }
+            load_offscreen(book, i, style, hyphenator, width, height, scale, page_height)
+                .map_or(0, |ch| ch.pages.count())
         })
         .collect()
+}
+
+/// One chapter laid out away from the window, images and all, so its pages
+/// are the ones reading it would show.
+#[allow(clippy::too_many_arguments)]
+pub fn load_offscreen(
+    book: &Book,
+    index: usize,
+    style: &ReadingStyle,
+    hyphenator: Option<&Hyphenator_>,
+    width: u32,
+    height: u32,
+    scale: f32,
+    page_height: f32,
+) -> Option<Chapter> {
+    let dark = style.dark();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let cb: SharedCallback<Resource> = Arc::new(CollectCallback(tx));
+    let vp = viewport(width, height, scale, dark);
+    let mut ch = load(book, index, style, vp, page_height, hyphenator, cb).ok()?;
+    // Images change how much fits, and the in-zip provider answers
+    // immediately, so take what arrived before counting.
+    for resource in rx.try_iter() {
+        let _ = catch_unwind(AssertUnwindSafe(|| ch.doc.load_resource(resource)));
+    }
+    relayout(&mut ch, viewport(width, height, scale, dark), page_height);
+    Some(ch)
+}
+
+/// Where a stored position starts in its chapter: the character it names when
+/// it names one, the element's top otherwise.
+pub fn top_of_cfi(ch: &Chapter, c: &crate::cfi::Cfi) -> Option<f32> {
+    let node = crate::cfi::resolve(ch.dom(), c)?;
+    c.offset
+        .and_then(|off| highlight_rects(ch.dom(), node, off, 1).first().map(|r| r.1))
+        .or_else(|| node_top(ch.dom(), node))
 }
 
 struct CollectCallback(std::sync::mpsc::Sender<Resource>);
