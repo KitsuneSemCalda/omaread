@@ -754,9 +754,10 @@ pub fn selection_rects(
 /// Rectangles for a stored highlight: a character offset and length inside one
 /// element, converted back to the byte range parley works in.
 ///
-/// Offsets are stored as *characters* because that is what a CFI means by
-/// `:offset`; parley counts bytes. Converting at this boundary keeps the stored
-/// CFI honest without making the rest of the code think in bytes.
+/// Offsets are stored as *visible characters* (`visible_count`) because that is
+/// what a CFI means by `:offset`; parley counts bytes, soft hyphens included.
+/// Converting at this boundary keeps the stored CFI honest without making the
+/// rest of the code think in bytes.
 pub fn highlight_rects(
     dom: &BaseDocument,
     id: usize,
@@ -764,10 +765,7 @@ pub fn highlight_rects(
     char_len: usize,
 ) -> Vec<(f32, f32, f32, f32)> {
     let Some(tl) = text_layout(dom, id) else { return Vec::new() };
-    let byte = |chars: usize| -> usize {
-        tl.text.char_indices().nth(chars).map_or(tl.text.len(), |(b, _)| b)
-    };
-    let (b0, b1) = (byte(char_start), byte(char_start + char_len));
+    let (b0, b1) = (byte_of_visible(&tl.text, char_start), byte_of_visible(&tl.text, char_start + char_len));
     if b1 <= b0 {
         return Vec::new();
     }
@@ -780,13 +778,29 @@ pub fn highlight_rects(
 
 /// Character offset and count for a byte range in an element's text, plus the
 /// text itself — what a highlight has to store, and what a copy puts on the
-/// clipboard. The offsets count the soft hyphens the layout carries; the text
-/// does not carry them, or a pasted word would hide breaks inside it.
+/// clipboard. All three leave out the soft hyphens the layout carries.
 pub fn char_span(dom: &BaseDocument, id: usize, bytes: std::ops::Range<usize>) -> Option<(usize, usize, String)> {
     let tl = text_layout(dom, id)?;
     let text = tl.text.get(bytes.clone())?;
-    let start = tl.text.get(..bytes.start)?.chars().count();
-    Some((start, text.chars().count(), text.replace('\u{AD}', "")))
+    let start = visible_count(tl.text.get(..bytes.start)?);
+    Some((start, visible_count(text), text.replace(crate::hyphen::SOFT, "")))
+}
+
+/// Characters a reader sees: the text less the soft hyphens hyphenation put
+/// in. Every stored offset counts these, so that a highlight or a reading
+/// position does not move when the hyphenation does — new patterns, or a book
+/// whose language is read differently.
+pub fn visible_count(text: &str) -> usize {
+    text.chars().filter(|&c| c != crate::hyphen::SOFT).count()
+}
+
+/// Byte index in the laid-out text where visible character `n` starts, or the
+/// end of the text. The inverse of `visible_count`.
+pub fn byte_of_visible(text: &str, n: usize) -> usize {
+    text.char_indices()
+        .filter(|&(_, c)| c != crate::hyphen::SOFT)
+        .nth(n)
+        .map_or(text.len(), |(b, _)| b)
 }
 
 /// The first element whose text contains `needle`, folded so an unaccented
@@ -838,7 +852,7 @@ pub fn char_at(dom: &BaseDocument, id: usize, y: f32) -> Option<usize> {
     let local = (y - oy) * tl.layout.scale();
     let line = tl.layout.lines().find(|l| l.metrics().max_coord > local)?;
     let byte = line.text_range().start;
-    Some(tl.text.get(..byte)?.chars().count())
+    Some(visible_count(tl.text.get(..byte)?))
 }
 
 /// The node a page begins at — the first atom at or after the page top.
@@ -1156,6 +1170,28 @@ mod tests {
 
     /// The Phase 3 milestone: a saved position must survive a font-size change.
     /// A page *number* cannot do this, which is why positions anchor to CFI.
+    #[test]
+    fn hyphenation_moves_no_offset_and_hides_no_word() {
+        let body = "<p>Many died of smallpox, an extraordinarily contagious disease.</p>";
+        let st = ReadingStyle::default();
+        let h = crate::hyphen::Hyphenator_::for_language("en").unwrap();
+        let plain = layout_fragment(body, &st, viewport(760, 1000, 1.0, false));
+        let marked = layout_fragment(&crate::hyphen::mark_html(body, &h), &st, viewport(760, 1000, 1.0, false));
+
+        let word = |d: &BaseDocument| {
+            let p = node_containing_text(d, "extraordinarily").expect("found despite soft hyphens");
+            let text = &text_layout(d, p).unwrap().text;
+            let (b0, b1) = (text.find("ex").unwrap(), text.find(" con").unwrap());
+            (p, char_span(d, p, b0..b1).unwrap())
+        };
+        let ((p0, a), (p1, b)) = (word(&plain), word(&marked));
+        assert!(text_layout(&marked, p1).unwrap().text.contains('\u{AD}'), "the marked one is hyphenated");
+        assert_eq!(a, b, "same offset, length and text with or without hyphenation");
+        assert_eq!(b.2, "extraordinarily");
+        assert_eq!(highlight_rects(&plain, p0, a.0, a.1).len(), highlight_rects(&marked, p1, b.0, b.1).len());
+        assert!(!highlight_rects(&marked, p1, b.0, b.1).is_empty());
+    }
+
     #[test]
     fn spaces_at_element_edges_survive_layout() {
         let html = r#"<p><span class="a">that the </span><span class="i">entire</span><span class="a"> world is</span></p>"#;

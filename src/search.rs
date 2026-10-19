@@ -195,10 +195,14 @@ pub fn fts_query(input: &str) -> Option<String> {
 /// has to be findable again inside the laid-out chapter or the jump lands at the
 /// top of the chapter instead of on the word.
 ///
+/// Soft hyphens are dropped: they are the line breaker's, inserted into the
+/// laid-out text, and "small\u{AD}pox" has to be found by "smallpox".
+///
 /// ponytail: a hand-written table for en/es/ca, the languages §12 commits to.
 /// Swap in real Unicode NFD stripping if the UI ever grows past them.
 pub fn fold(s: &str) -> String {
     s.chars()
+        .filter(|&c| c != crate::hyphen::SOFT)
         .flat_map(char::to_lowercase)
         .map(|c| match c {
             'á' | 'à' | 'ä' | 'â' | 'ã' => 'a',
@@ -209,7 +213,6 @@ pub fn fold(s: &str) -> String {
             'ñ' => 'n',
             'ç' => 'c',
             'ý' | 'ÿ' => 'y',
-            '\u{00ad}' => ' ',
             c => c,
         })
         .collect()
@@ -218,8 +221,9 @@ pub fn fold(s: &str) -> String {
 /// Where `needle` sits in `text`, as `(character offset, character length)`.
 ///
 /// Compared folded, so an unaccented query matches accented text — and counted
-/// in characters, because folding is one-to-one per character but not per byte
-/// ("á" is two bytes, "a" is one). Character offsets are also what a CFI stores.
+/// in visible characters, because folding is one-to-one per character but not
+/// per byte ("á" is two bytes, "a" is one) and drops soft hyphens. Visible
+/// characters are also what a CFI stores (`chapter::char_span`).
 pub fn char_match(text: &str, needle: &str) -> Option<(usize, usize)> {
     let hay: Vec<char> = fold(text).chars().collect();
     let pin: Vec<char> = fold(needle).chars().collect();
@@ -271,7 +275,8 @@ mod tests {
         assert_eq!(fold("Canción"), "cancion");
         assert_eq!(fold("MAÑANA"), "manana");
         assert_eq!(fold("Coneixença"), "coneixenca");
-        assert!(fold("ma\u{00ad}ñana").contains("ma nana"));
+        assert_eq!(fold("ma\u{00ad}ña\u{00ad}na"), "manana", "soft hyphens are not text");
+        assert_eq!(char_match("la vi\u{AD}rue\u{AD}la", "viruela"), Some((3, 7)), "offsets skip them");
     }
 
     /// Offsets must be in characters: folding "á" to "a" changes the byte

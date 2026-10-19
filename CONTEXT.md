@@ -179,6 +179,15 @@ the app ships a font-size control. CFI additionally survives round-tripping to a
 from other readers, and is the only anchor that doesn't corner us when highlights
 arrive.
 
+**A CFI's `:offset` counts visible characters.** The laid-out text carries the
+soft hyphens hyphenation inserts; offsets and highlight lengths leave them out
+(`chapter::visible_count`, `byte_of_visible`). Otherwise a highlight would move
+whenever the hyphenation did (new patterns, a language read differently), and an
+offset would not mean what it means to another reader. Search folds them out
+too, so "small\u{AD}pox" is found by "smallpox". The two highlights stored before
+this rule were rewritten in place; reading positions were left, since a few
+characters' drift does not change the page.
+
 ### SQLite
 
 One database. Holds:
