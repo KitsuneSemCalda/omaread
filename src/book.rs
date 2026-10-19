@@ -193,18 +193,6 @@ impl Book {
         self.spine.len()
     }
 
-    /// Byte offset and length of one spine item — the weights reading progress
-    /// and the page estimate are both built on.
-    pub fn span(&self, spine: usize) -> (usize, usize) {
-        let start = self.offsets.get(spine).copied().unwrap_or(0);
-        let end = self.offsets.get(spine + 1).copied().unwrap_or(start);
-        (start, end.saturating_sub(start))
-    }
-
-    pub fn total_bytes(&self) -> usize {
-        self.offsets.last().copied().unwrap_or(0)
-    }
-
     /// How far through the whole book a position is, as 0.0..=1.0.
     ///
     /// `within` is the fraction through the spine item, so the figure moves

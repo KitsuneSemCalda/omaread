@@ -515,8 +515,6 @@ dependencies = [
 [[package]]
 name = "blitz-html"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e77adcd3cb60e67d365bc897c6120ecb684627f2e2265c2bb75b12cc6c4bc4de"
 dependencies = [
  "blitz-dom",
  "blitz-traits",

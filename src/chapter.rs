@@ -92,13 +92,6 @@ impl Chapter {
     pub fn content_height(&self) -> f32 {
         content_height(self.dom())
     }
-
-    /// Recompute pages for a new page height, preserving the reader's place.
-    pub fn repaginate(&mut self, page_height: f32) {
-        let anchor = self.pages.top_of(self.pages.page_containing(self.pages.top_of(0)));
-        let _ = anchor;
-        self.pages = paginate_dom(self.dom(), page_height);
-    }
 }
 
 /// Build the page table for a laid-out document.

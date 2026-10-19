@@ -187,9 +187,9 @@ mod tests {
             .expect("no paragraph");
         let (px, py, pw, ph) = crate::chapter::node_rect(doc.dom(), par).expect("no box");
         let mut on: Option<(f32, f32)> = None;
-        let (mut y, mut x) = (py, px);
+        let mut y = py;
         while y < py + ph && on.is_none() {
-            x = px;
+            let mut x = px;
             while x < px + pw {
                 if doc
                     .doc

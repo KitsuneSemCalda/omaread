@@ -38,6 +38,11 @@ compatibility obligations until 1.0.
 | i18n | `fluent-rs` |
 | Hyphenation | Knuth-Liang patterns, soft-hyphen insertion |
 
+`blitz-html` is patched from `vendor/blitz-html` (`[patch.crates-io]`): 0.2.0
+exactly, minus the loop that printed every recovered parse error to stdout —
+hundreds of `ERROR:` lines per chapter of a sloppy MOBI. Drop the patch at the
+next blitz upgrade if upstream has stopped printing.
+
 **There is no Iced.** The application shell — library grid, chrome, settings — is
 authored in HTML/CSS and rendered through the same `blitz-dom` pipeline as the
 book. One layout engine, one paint path, one styling language.

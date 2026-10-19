@@ -41,3 +41,8 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 # Already in the tree, pinned by blitz-dom. Only the font test names it: it
 # needs `Blob` to hand a bundled face to a `Collection` directly.
 fontique = "0.6"
+
+# blitz-html 0.2.0 with one change: it no longer prints every recovered parse
+# error to stdout. See vendor/blitz-html/src/html_sink.rs.
+[patch.crates-io]
+blitz-html = { path = "vendor/blitz-html" }

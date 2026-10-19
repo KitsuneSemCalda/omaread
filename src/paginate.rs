@@ -263,8 +263,6 @@ mod tests {
         assert_eq!(pages.extent_of(0), 900.0);
     }
 
-    use super::*;
-
     /// `count` lines of `h` px starting at `start`, all one paragraph.
     fn para(group: usize, start: f32, h: f32, count: usize) -> Vec<Atom> {
         (0..count)
