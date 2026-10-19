@@ -26,6 +26,8 @@ pub fn html(
     // Where a followed link was followed *from*, already worded. `None` when
     // there is nowhere to go back to, and then there is no button either.
     back: Option<&str>,
+    // This page carries a bookmark: the button says so, in the accent.
+    bookmarked: bool,
 ) -> String {
     // Top bar occupies [INSET, INSET + BAR]; this drops the bottom one to
     // [H - INSET - BAR, H - INSET].
@@ -37,11 +39,16 @@ pub fn html(
         false => ("highlight", tr!("hud-highlight")),
     };
 
+    let (on, bookmark) = match bookmarked {
+        true => (" on", tr!("hud-bookmarked")),
+        false => ("", tr!("hud-bookmark")),
+    };
+
     format!(
         r#"<!DOCTYPE html>
 <html><body>
 <div class="hud">
-  <span class="btn" data-hud="bookmark"><span class="ico" data-icon="bookmark"></span><span class="lbl">{bookmark}</span></span>
+  <span class="btn{on}" data-hud="bookmark"><span class="ico" data-icon="bookmark"></span><span class="lbl">{bookmark}</span></span>
   <span class="btn" data-hud="contents"><span class="ico" data-icon="contents"></span><span class="lbl">{contents}</span></span>
   <span class="btn" data-hud="{mark_action}"><span class="ico" data-icon="highlight"></span><span class="lbl">{mark_label}</span></span>
   <span class="grow"></span>
@@ -57,7 +64,6 @@ pub fn html(
 </body></html>"#,
         title = escape(title),
         readout = escape(readout),
-        bookmark = tr!("hud-bookmark"),
         contents = tr!("hud-contents"),
         columns = tr!("hud-columns", n = columns),
         library = tr!("hud-library"),
@@ -227,8 +233,8 @@ html .foot {{ padding-top: 12px; font-size: 12px; color: {subtle}; }}
 /// The page shows through, so `html` and `body` must stay transparent — only
 /// the bar itself paints a ground.
 pub fn stylesheet(c: &Chrome) -> String {
-    let Chrome { bg, fg, subtle, font, .. } = c;
-    let border = c.tint(0.4);
+    let Chrome { bg, fg, subtle, accent, font, .. } = c;
+    let (border, selected) = (c.tint(0.4), c.tint(0.18));
     format!(
         r#"
 html {{
@@ -269,6 +275,9 @@ html .btn {{
   margin-left: 4px;
   white-space: nowrap;
 }}
+/* A control whose state is on — this page is bookmarked: Omarchy's selected
+   fill, in the accent. The window paints its icon in the accent too. */
+html .btn.on {{ color: {accent}; background: {selected}; }}
 
 /* An empty box the window paints an icon into; it only has to hold the space.
    The button is a flex row so the slot gets a real layout box: an inline-block
@@ -292,7 +301,7 @@ mod tests {
     /// The bars are placed by computed margins, so the arithmetic is the layout.
     #[test]
     fn the_bars_sit_at_the_head_and_foot_of_the_window() {
-        let out = html("A Book", "42%", 1, false, 1000.0, Some("Back to page 7"));
+        let out = html("A Book", "42%", 1, false, 1000.0, Some("Back to page 7"), false);
         let push = 1000.0 - 2.0 * INSET - 2.0 * BAR;
         assert!(out.contains(&format!("margin-top: {push}px")), "{out}");
         assert!(out.contains("42%"));
@@ -315,10 +324,21 @@ mod tests {
         assert!(crate::find_by_attr(doc.dom(), 0, "data-help", "").is_some());
     }
 
+    /// A bookmarked page has to look bookmarked: the button turns on and says so.
+    #[test]
+    fn the_bookmark_button_shows_the_page_is_bookmarked() {
+        let off = html("A Book", "5%", 1, false, 900.0, None, false);
+        let on = html("A Book", "5%", 1, false, 900.0, None, true);
+        assert!(off.contains(r#"<span class="btn" data-hud="bookmark">"#), "{off}");
+        assert!(on.contains(r#"<span class="btn on" data-hud="bookmark">"#), "{on}");
+        assert!(on.contains("Bookmarked") && !off.contains("Bookmarked"));
+        assert!(stylesheet(&crate::style::Theme::White.chrome()).contains("html .btn.on {"));
+    }
+
     /// A window shorter than the bars must not produce a negative margin.
     #[test]
     fn a_tiny_window_does_not_push_the_bar_off_the_top() {
-        let out = html("A Book", "0%", 1, false, 10.0, Some("Back to page 7"));
+        let out = html("A Book", "0%", 1, false, 10.0, Some("Back to page 7"), false);
         assert!(out.contains("margin-top: 0px"), "{out}");
     }
 
@@ -326,7 +346,7 @@ mod tests {
     /// readout is ours but goes through the same escaping.
     #[test]
     fn the_title_cannot_inject_markup() {
-        let out = html(r#"<script>x</script>"#, "<b>", 2, false, 800.0, Some("Back to page 7"));
+        let out = html(r#"<script>x</script>"#, "<b>", 2, false, 800.0, Some("Back to page 7"), false);
         assert!(!out.contains("<script"), "{out}");
         assert!(out.contains("&lt;script&gt;"));
         assert!(!out.contains("<b>"));
@@ -336,7 +356,7 @@ mod tests {
     /// title has to be the bold one.
     #[test]
     fn the_controls_are_click_targets_and_the_title_is_bold() {
-        let out = html("A Book", "page 8 of 19", 2, false, 900.0, Some("Back to page 7"));
+        let out = html("A Book", "page 8 of 19", 2, false, 900.0, Some("Back to page 7"), false);
         for what in [
             "bookmark", "contents", "highlight", "smaller", "bigger", "columns", "readout",
             "library",
@@ -353,11 +373,11 @@ mod tests {
     /// Once the pointer is inside a highlight, the useful offer is removing it.
     #[test]
     fn the_highlight_control_becomes_a_remove_control() {
-        let plain = html("A Book", "5%", 1, false, 900.0, Some("Back to page 7"));
+        let plain = html("A Book", "5%", 1, false, 900.0, Some("Back to page 7"), false);
         assert!(plain.contains(r#"data-hud="highlight""#));
         assert!(!plain.contains("unhighlight"));
 
-        let inside = html("A Book", "5%", 1, true, 900.0, Some("Back to page 7"));
+        let inside = html("A Book", "5%", 1, true, 900.0, Some("Back to page 7"), false);
         assert!(inside.contains(r#"data-hud="unhighlight""#), "{inside}");
         assert!(inside.contains(">Remove<"));
         // The icon slot stays, whichever way the button reads.
@@ -382,7 +402,7 @@ mod tests {
     /// Every icon slot the window paints into has to exist in the markup.
     #[test]
     fn the_icon_slots_are_there_for_the_window_to_paint_into() {
-        let out = html("A Book", "5%", 2, false, 900.0, Some("Back to page 7"));
+        let out = html("A Book", "5%", 2, false, 900.0, Some("Back to page 7"), false);
         for icon in ["bookmark", "contents", "highlight", "back"] {
             assert!(out.contains(&format!(r#"data-icon="{icon}""#)), "missing {icon}: {out}");
         }
@@ -395,7 +415,7 @@ mod tests {
     /// HUD is rebuilt on every page turn, so that was a stream of it.
     #[test]
     fn the_document_declares_a_doctype() {
-        assert!(html("A", "1%", 1, false, 900.0, Some("Back to page 7")).starts_with("<!DOCTYPE html>"));
+        assert!(html("A", "1%", 1, false, 900.0, Some("Back to page 7"), false).starts_with("<!DOCTYPE html>"));
         assert!(crate::toc::html(&[], "Contents", "t", 0, 0).starts_with("<!DOCTYPE html>"));
         assert!(
             crate::grid::html(&[], "", crate::db::Sort::Recent, &[], None, 0..0)

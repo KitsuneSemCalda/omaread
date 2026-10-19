@@ -33,6 +33,7 @@ theme-night = Night
 ## Reading HUD
 
 hud-bookmark = Bookmark
+hud-bookmarked = Bookmarked
 hud-contents = Contents
 hud-highlight = Highlight
 hud-remove = Remove

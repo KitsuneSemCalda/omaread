@@ -301,7 +301,7 @@ mod tests {
 
         let (w, h) = (1200u32, 900u32);
         let doc = crate::chapter::layout_document(
-            crate::hud::html("Un libro", "page 8 of 19", 2, false, h as f32, Some("Back to page 7")),
+            crate::hud::html("Un libro", "page 8 of 19", 2, false, h as f32, Some("Back to page 7"), false),
             crate::hud::stylesheet(&crate::style::Theme::White.chrome()),
             None,
             crate::chapter::viewport(w, h, 1.0, false),
@@ -554,6 +554,8 @@ struct App {
     /// What `hud_doc` was built from; it is rebuilt only when this changes,
     /// because pointer motion arrives far faster than the text does.
     hud_key: String,
+    /// The page under the HUD carries a bookmark; its icon takes the accent.
+    hud_bookmarked: bool,
     hud_shown: bool,
     /// The foot of the page shows a percentage until you click it, then a page
     /// number. Clicking again swaps back.
@@ -666,6 +668,7 @@ impl App {
             toc_doc: None,
             hud_doc: None,
             hud_key: String::new(),
+            hud_bookmarked: false,
             hud_shown: false,
             show_page: false,
             sel_mark: None,
@@ -940,17 +943,27 @@ impl App {
         let height = self.size.1 as f32 / self.ui_scale();
         let on_mark = self.sel_mark.is_some();
         let back = self.back.as_ref().map(|(_, _, label)| label.clone());
+        self.hud_bookmarked = self.page_bookmarked();
         let key = format!(
-            "{readout}|{cols}|{on_mark}|{height}|{:?}|{}|{:?}",
+            "{readout}|{cols}|{on_mark}|{height}|{:?}|{}|{:?}|{}",
             self.style.theme,
             book.title,
             back,
+            self.hud_bookmarked,
         );
         if key == self.hud_key && self.hud_doc.is_some() {
             return;
         }
 
-        let html = hud::html(&book.title, &readout, cols, on_mark, height, back.as_deref());
+        let html = hud::html(
+            &book.title,
+            &readout,
+            cols,
+            on_mark,
+            height,
+            back.as_deref(),
+            self.hud_bookmarked,
+        );
         let ua = hud::stylesheet(&self.chrome());
         // The HUD spans the window; only the page is laid out at column width.
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
@@ -993,6 +1006,15 @@ impl App {
         let ch = self.chapter.as_ref()?;
         let node = chapter::node_at(ch.dom(), ch.pages.top_of(self.page))?;
         cfi::of_node(ch.dom(), node, self.index)
+    }
+
+    /// Whether the page on screen carries a bookmark. One indexed lookup, so
+    /// the HUD asks on every build rather than keeping a copy that could drift.
+    fn page_bookmarked(&self) -> bool {
+        self.cfi_of_page().is_some_and(|c| {
+            let db = self.db.as_ref().and_then(|d| d.lock().ok());
+            db.and_then(|db| db.bookmark_at(&self.hash, &c.to_string())).is_some()
+        })
     }
 
     fn toggle_bookmark(&mut self) {
@@ -1455,11 +1477,11 @@ impl App {
     /// It lives in `menu`, like the settings panel, so hover, hit-testing and
     /// painting are the panel's.
     fn open_context_menu(&mut self) {
-        let bookmarked = self.cfi_of_page().is_some_and(|c| {
-            let db = self.db.as_ref().and_then(|d| d.lock().ok());
-            db.and_then(|db| db.bookmark_at(&self.hash, &c.to_string())).is_some()
-        });
-        let html = hud::context_html(self.selected().is_some(), self.sel_mark.is_some(), bookmarked);
+        let html = hud::context_html(
+            self.selected().is_some(),
+            self.sel_mark.is_some(),
+            self.page_bookmarked(),
+        );
 
         // ponytail: height estimated from the row count, not measured. Measure
         // the laid-out panel if a row ever wraps.
@@ -2881,6 +2903,7 @@ impl App {
         };
         let chrome = self.chrome();
         let ink = parse_hex(&chrome.fg);
+        let hud_bookmarked = self.hud_bookmarked;
         let accent = parse_hex(&chrome.accent);
 
         // Disjoint field borrows: `render` takes the renderer mutably, the
@@ -3016,7 +3039,8 @@ impl App {
                 if let Some(hud) = hud {
                     paint::overlay(scene, &mut hud.doc, &ui_frame);
                     for &(icon, rect) in &icons {
-                        paint::icon(scene, icon, rect, ink, ui_scale);
+                        let on = icon == paint::Icon::Bookmark && hud_bookmarked;
+                        paint::icon(scene, icon, rect, if on { accent } else { ink }, ui_scale);
                     }
                     // Over the bar, not under it: the bar's ground is opaque.
                     if let Some(rect) = hover_hud

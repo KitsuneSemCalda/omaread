@@ -36,6 +36,7 @@ theme-night = Noche
 ## Lectura
 
 hud-bookmark = Marcador
+hud-bookmarked = Marcada
 hud-contents = Índice
 hud-highlight = Resaltar
 hud-remove = Quitar
