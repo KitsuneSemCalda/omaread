@@ -560,8 +560,12 @@ in `~/.config/omarchy/themed/`, Omarchy renders it into the active theme
 directory on a theme switch, and Omaread reads four custom properties out of the
 result (`--bg`, `--fg`, `--subtle`, `--panel`). No theme parsing, nothing to keep
 in sync with upstream. Off Omarchy, or before the template is installed, the
-chrome keeps following the reading theme. F5 re-reads it, so a theme switch does
-not need a restart. A value that is not a `#rrggbb` is refused rather than
+chrome keeps following the reading theme. A switch shows at once: Omarchy
+renders every template into `next-theme` and then renames it to `theme`, and an
+inotify watch on that rename (`style::watch_omarchy`, rustix, already in the
+tree) re-reads the palette. Re-reading on focus was tried first and lost the
+race: the theme menu gives focus back before the templates are rendered. F5
+re-reads it too. A value that is not a `#rrggbb` is refused rather than
 passed on — an unrendered `{{ background }}` would otherwise paint the library
 black.
 

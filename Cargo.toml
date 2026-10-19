@@ -26,6 +26,9 @@ parley = "0.6"
 peniko = "0.5"
 rbook = "0.7.10"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Already in the tree, through zbus. Named directly for inotify, to see Omarchy
+# swap a new theme into place (style::watch_omarchy).
+rustix = { version = "1", features = ["fs"] }
 sha2 = "0.11.0"
 # Already in the tree, pinned by blitz-dom. Named directly to find a font's
 # hyphen glyph, which paint.rs draws at soft-hyphen breaks.

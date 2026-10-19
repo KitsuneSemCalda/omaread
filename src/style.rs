@@ -428,6 +428,43 @@ pub fn omarchy_chrome() -> Option<Chrome> {
     Some(Chrome { subtle: chrome.tint(0.6), ..chrome })
 }
 
+/// Call `changed` whenever Omarchy puts a new theme in place, from a thread of
+/// its own, for as long as the process lives.
+///
+/// `omarchy theme set` renders every template into `next-theme` and only then
+/// renames it to `theme`, so that rename is the moment the palette is ready.
+/// The window regaining focus is not: the theme menu gives it back before the
+/// templates are done, and the old palette was read. Nothing happens off
+/// Omarchy.
+pub fn watch_omarchy(changed: impl Fn() + Send + 'static) {
+    let Some(home) = std::env::var_os("HOME") else { return };
+    // `…/current/theme/omaread.css` → `…/current`, where the rename lands.
+    if let Some(dir) = std::path::Path::new(&home).join(OMARCHY_CSS).ancestors().nth(2) {
+        watch_theme_swap(dir.to_owned(), changed);
+    }
+}
+
+/// `changed` on every `theme` created or renamed into `dir`.
+fn watch_theme_swap(dir: std::path::PathBuf, changed: impl Fn() + Send + 'static) {
+    use rustix::fs::inotify;
+    std::thread::spawn(move || {
+        let Ok(fd) = inotify::init(inotify::CreateFlags::CLOEXEC) else { return };
+        let watch = inotify::WatchFlags::MOVED_TO | inotify::WatchFlags::CREATE;
+        if inotify::add_watch(&fd, &dir, watch).is_err() {
+            return;
+        }
+        let mut buf = [std::mem::MaybeUninit::uninit(); 1024];
+        let mut events = inotify::Reader::new(&fd, &mut buf);
+        loop {
+            match events.next() {
+                Ok(e) if e.file_name().is_some_and(|n| n.to_bytes() == b"theme") => changed(),
+                Ok(_) | Err(rustix::io::Errno::INTR) => {}
+                Err(_) => return,
+            }
+        }
+    });
+}
+
 /// Where `omarchy display text size` keeps the desktop's text size.
 const OMARCHY_SHELL: &str = ".config/omarchy/shell.toml";
 
@@ -505,6 +542,30 @@ fn parse_chrome(css: &str) -> Option<Chrome> {
 
 #[cfg(test)]
 mod tests {
+    /// What `omarchy theme set` does once the templates are rendered: a whole
+    /// `next-theme` renamed to `theme` over the old one. The rename is the
+    /// signal, and it has to arrive.
+    #[test]
+    fn a_theme_swapped_into_place_is_noticed() {
+        let dir = std::env::temp_dir().join(format!("omaread-theme-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("theme")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        super::watch_theme_swap(dir.clone(), move || { let _ = tx.send(()); });
+        // The watch is set up on its own thread; let it get there.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        std::fs::create_dir(dir.join("next-theme")).unwrap();
+        std::fs::write(dir.join("next-theme/omaread.css"), ":root {}").unwrap();
+        std::fs::remove_dir_all(dir.join("theme")).unwrap();
+        std::fs::rename(dir.join("next-theme"), dir.join("theme")).unwrap();
+
+        let got = rx.recv_timeout(std::time::Duration::from_secs(2));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(got.is_ok(), "the rename went unnoticed");
+        assert!(rx.try_recv().is_err(), "making next-theme is not the signal");
+    }
+
     /// Only `[font]`'s base-size counts, and only within Omarchy's own range.
     #[test]
     fn the_omarchy_text_size_is_read_from_the_font_section() {

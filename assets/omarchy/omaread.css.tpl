@@ -5,8 +5,8 @@
  *
  * Omarchy writes the result to
  *   ~/.local/state/omarchy/current/theme/omaread.css
- * which is where Omaread reads it. Press F5 in the library to pick up a new
- * theme without restarting.
+ * which is where Omaread reads it, again the moment Omarchy puts a new theme
+ * in place, so a theme switch needs no restart.
  *
  * The app chrome always follows the system theme. The reading surface does too
  * by default (the "Omarchy" theme, CONTEXT.md §11); White/Sepia/Grey/Night stay

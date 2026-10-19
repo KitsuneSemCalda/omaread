@@ -701,6 +701,8 @@ struct App {
     /// The stored highlight the last press landed inside, if any. What makes the
     /// menu offer "Remove" instead of "Highlight".
     sel_mark: Option<i64>,
+    /// Omarchy has put a new theme in place (`style::watch_omarchy`).
+    theme_rx: Option<Receiver<()>>,
     /// Measured pages per chapter, and the layout they were measured at. This is
     /// what lets the readout say "page 27 of 336" and mean it.
     chapter_pages: Option<Vec<usize>>,
@@ -821,6 +823,7 @@ impl App {
             hud_shown: false,
             show_page: false,
             goto: None,
+            theme_rx: None,
             scrubbing: false,
             sel_mark: None,
             chapter_pages: None,
@@ -3000,6 +3003,22 @@ impl App {
 
     /// Forget the chrome laid out at the old scale. The HUD comes back on the
     /// next frame; a menu or a popup was placed for a window that is gone.
+    /// Pick up the palette Omarchy rendered, if it changed.
+    fn reread_palette(&mut self) {
+        let omarchy = style::omarchy_chrome();
+        if omarchy == self.style.omarchy {
+            return;
+        }
+        self.style.omarchy = omarchy;
+        // Every surface is styled from the palette when it is built.
+        (self.lib_doc, self.toc_doc) = (None, None);
+        self.drop_chrome();
+        if self.style.theme == Theme::Omarchy {
+            self.restyle();
+        }
+        self.request_redraw();
+    }
+
     fn drop_chrome(&mut self) {
         self.hud_doc = None;
         self.menu = None;
@@ -4294,6 +4313,13 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
             33.0 * self.style.font_px(),
         );
         self.renderer.resume(window.clone(), self.size.0, self.size.1);
+        let (tx, rx) = channel();
+        let w = window.clone();
+        style::watch_omarchy(move || {
+            let _ = tx.send(());
+            w.request_redraw();
+        });
+        self.theme_rx = Some(rx);
         self.window = Some(window);
 
         // The library needs no chapter; only reopen a book if one is open.
@@ -4507,6 +4533,9 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
         self.drain_resources();
         self.take_measured();
         self.take_picked();
+        if self.theme_rx.as_ref().is_some_and(|rx| rx.try_iter().count() > 0) {
+            self.reread_palette();
+        }
         let now = Instant::now();
 
         if self.exit_at.is_some_and(|at| now >= at) {
