@@ -186,6 +186,9 @@ fn card(index: usize, b: &BookRow, with_cover: bool) -> String {
     if b.missing {
         classes.push_str(" missing");
     }
+    if b.quarantined {
+        classes.push_str(" quarantined");
+    }
 
     format!(
         r#"<div class="{classes}" data-atom data-index="{index}" data-hash="{hash}">
@@ -213,7 +216,14 @@ fn card(index: usize, b: &BookRow, with_cover: bool) -> String {
         },
         hash = escape(&b.hash),
         title = escape(&clamp(&b.title, 34)),
-        author = escape(&clamp(&if b.missing { tr!("library-file-missing") } else { b.author.clone() }, 24)),
+        author = escape(&clamp(
+            &match (b.missing, b.quarantined) {
+                (true, _) => tr!("library-file-missing"),
+                (_, true) => tr!("library-quarantined"),
+                _ => b.author.clone(),
+            },
+            24
+        )),
     )
 }
 
@@ -436,7 +446,7 @@ html .card {{
      `per_row`: seven were fitting a window the arithmetic said held five. */
   flex-shrink: 0;
 }}
-html .card.missing {{ opacity: 0.45; }}
+html .card.missing, html .card.quarantined {{ opacity: 0.45; }}
 
 html .cover {{
   display: block;

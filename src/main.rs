@@ -605,6 +605,12 @@ struct App {
     /// The chapter that page is in, when the turn crossed into another one.
     /// Kept only while it slides off; `None` means the page is in `chapter`.
     slide_from: Option<Chapter>,
+    /// The engine has panicked on the open book since it was opened. Counted
+    /// once per opening, towards quarantine.
+    panicked: bool,
+    /// A quarantined book the library has warned about: opening it again
+    /// opens it anyway.
+    warned: Option<String>,
     /// A tag being typed for the selected book. Tagging borrows the search box.
     tagging: Option<String>,
     /// The contents list. Rebuilt on every open and on every selection move.
@@ -728,6 +734,8 @@ impl App {
             proxy: None,
             slide: None,
             slide_from: None,
+            panicked: false,
+            warned: None,
             back: None,
             popup: None,
             menu: None,
@@ -883,6 +891,7 @@ impl App {
         };
 
         self.hash = db::file_hash(&path).unwrap_or_default();
+        self.panicked = false;
         self.pending = self
             .db
             .as_ref()
@@ -933,7 +942,32 @@ impl App {
             eprintln!("omaread: {} is missing from disk", row.title);
             return;
         }
+        // A book that took the engine down on two openings is not reopened on
+        // a single click: say so, and let a second one through.
+        if row.quarantined && self.warned.as_deref() != Some(row.hash.as_str()) {
+            self.warned = Some(row.hash.clone());
+            self.open_note(&i18n::tr!("open-quarantined", title = row.title.clone()));
+            return;
+        }
+        self.warned = None;
         self.open_path(&PathBuf::from(&row.path), 0);
+    }
+
+    /// The engine panicked on the open book. One count per opening, so a bad
+    /// chapter turned past twice is not two strikes; the second opening that
+    /// panics quarantines it (CONTEXT.md §6).
+    fn engine_panicked(&mut self) {
+        if self.book.is_none() || std::mem::replace(&mut self.panicked, true) {
+            return;
+        }
+        let Some(db) = self.db.as_ref().and_then(|d| d.lock().ok()) else { return };
+        match db.note_panic(&self.hash) {
+            Ok(n) if n >= db::QUARANTINE_AFTER => {
+                eprintln!("omaread: the engine panicked on this book on {n} openings; quarantined")
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("omaread: could not count the panic: {e}"),
+        }
     }
 
     /// Lay out the library grid. Rebuilt on any change to query, sort or
@@ -1419,10 +1453,10 @@ impl App {
         let x = self.cursor.0 / self.scale;
         let col = ((x / col_w).floor() as usize).min(cols - 1);
         let page = (self.page + col).min(self.page_count().saturating_sub(1));
-        let top = self.chapter.as_ref().map_or(0.0, |c| c.pages.top_of(page));
+        let y = self.cursor.1 / self.scale - self.page_margin();
         (
             x - col as f32 * col_w,
-            self.cursor.1 / self.scale - self.page_margin() + top,
+            self.chapter.as_ref().map_or(y, |c| c.pages.flow_y(page, y)),
         )
     }
 
@@ -2893,6 +2927,9 @@ impl App {
                 }
                 Err(e) => {
                     eprintln!("omaread: {e}");
+                    if e.starts_with(chapter::PANICKED) {
+                        self.engine_panicked();
+                    }
                     index += 1;
                 }
             }
@@ -3019,6 +3056,7 @@ impl App {
         };
         if panicked {
             eprintln!("omaread: engine panicked during relayout; reloading chapter");
+            self.engine_panicked();
             let i = self.index;
             self.load_chapter(i);
             return;
@@ -3060,6 +3098,9 @@ impl App {
             self.request_redraw();
         } else {
             eprintln!("omaread: engine panicked loading a resource; ignoring it");
+            if self.view == View::Reading {
+                self.engine_panicked();
+            }
         }
     }
 
@@ -3202,25 +3243,27 @@ impl App {
         let slices: Vec<(f32, f32)> = (0..cols)
             .map(|c| page + c)
             .map(|p| match p < count {
-                true => (ch.pages.top_of(p), ch.pages.extent_of(p)),
+                true => ch.pages.slice(p),
                 false => (0.0, 0.0),
             })
             .collect();
+        // A table header repeated over each column that continues a table.
+        let heads: Vec<Option<(f32, f32)>> = (0..cols).map(|c| ch.pages.head_of(page + c)).collect();
         // The page being left, in the same flow: a turn within one chapter is
         // two slices of one document, which is exactly what two columns are.
         // Across a boundary it is a slice of the chapter before.
-        let outgoing: Vec<(f32, f32)> = match slide {
+        let (outgoing, outgoing_heads): (Vec<(f32, f32)>, Vec<Option<(f32, f32)>>) = match slide {
             Some((s, _)) => {
                 let from = slide_from.as_ref().unwrap_or(&*ch);
                 (0..cols)
                     .map(|c| s.from + c)
                     .map(|p| match p < from.pages.count() {
-                        true => (from.pages.top_of(p), from.pages.extent_of(p)),
-                        false => (0.0, 0.0),
+                        true => (from.pages.slice(p), from.pages.head_of(p)),
+                        false => ((0.0, 0.0), None),
                     })
-                    .collect()
+                    .unzip()
             }
-            None => Vec::new(),
+            None => Default::default(),
         };
         let doc = &mut ch.doc;
         let frame = paint::Frame {
@@ -3234,9 +3277,10 @@ impl App {
         let ui_frame = paint::Frame { scale: ui_scale, ..frame };
         let col_w = (w as f32 / scale as f32) / cols as f32;
 
+        let mut painted = true;
         renderer.render(|scene| {
             // An engine panic while painting must not take the window with it.
-            let _ = catch_unwind(AssertUnwindSafe(|| {
+            painted = catch_unwind(AssertUnwindSafe(|| {
                 // Two columns are two pages of one flow side by side, not CSS
                 // multicol: the same document painted twice at two scroll
                 // offsets (CONTEXT.md §3).
@@ -3252,10 +3296,16 @@ impl App {
                             None => &mut *doc,
                         };
                         paint::column(scene, doc, top, extent, x, col_w, &frame, ground, false);
+                        if let Some(head) = outgoing_heads[col] {
+                            paint::head(scene, doc, head, x, col_w, &frame, ground);
+                        }
                     }
                     for (col, &(top, extent)) in slices.iter().enumerate() {
                         let x = in_x + col as f32 * col_w;
                         paint::column(scene, doc, top, extent, x, col_w, &frame, ground, false);
+                        if let Some(head) = heads[col] {
+                            paint::head(scene, doc, head, x, col_w, &frame, ground);
+                        }
                     }
                 } else {
                 for (col, &(top, extent)) in slices.iter().enumerate() {
@@ -3270,6 +3320,9 @@ impl App {
                     paint::bands(scene, &highlights, HIGHLIGHT, top, extent, x, &frame);
                     paint::bands(scene, &noted, NOTED, top, extent, x, &frame);
                     paint::bands(scene, &selection, accent.with_alpha(SELECTION_ALPHA), top, extent, x, &frame);
+                    if let Some(head) = heads[col] {
+                        paint::head(scene, doc, head, x, col_w, &frame, ground);
+                    }
                 }
                 }
                 // Before the selection's outline, so a card that is both
@@ -3334,8 +3387,12 @@ impl App {
                         paint::outline(scene, rect, ink.with_alpha(HOVER_BORDER_ALPHA), 1.0, ui_scale);
                     }
                 }
-            }));
+            }))
+            .is_ok();
         });
+        if !painted && self.view == View::Reading {
+            self.engine_panicked();
+        }
 
         if std::env::var_os("OMAREAD_DEBUG_TIME").is_some() {
             eprintln!("TIME frame: {:.1}ms", started.elapsed().as_secs_f32() * 1000.0);

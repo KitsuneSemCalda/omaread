@@ -175,7 +175,7 @@ pub fn run(args: &[String]) -> i32 {
     let slices: Vec<(f32, f32)> = (0..cols as usize)
         .map(|c| page + c)
         .map(|p| match p < count {
-            true => (ch.pages.top_of(p), ch.pages.extent_of(p)),
+            true => ch.pages.slice(p),
             false => (0.0, 0.0),
         })
         .collect();
@@ -211,6 +211,9 @@ pub fn run(args: &[String]) -> i32 {
                         x,
                         &frame,
                     );
+                    if let Some(head) = ch.pages.head_of(page + col) {
+                        paint::head(scene, &mut ch.doc, head, x, column_css, &frame, ground);
+                    }
                 }
             }
             if let Some(c) = hud_doc.as_mut() {

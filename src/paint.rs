@@ -78,6 +78,39 @@ pub fn column(
     ground_band(scene, x, width, margin + extent, height as f32 / scale as f32, ground, frame);
 }
 
+/// Repeat a table's header at the top of a continuation page: the flow slice
+/// `head` painted into the band the paginator left above the page's content.
+/// After the column, its highlights and selection, which it covers.
+#[allow(clippy::too_many_arguments)]
+pub fn head(
+    scene: &mut impl PaintScene,
+    doc: &mut HtmlDocument,
+    head: (f32, f32),
+    x: f32,
+    width: f32,
+    frame: &Frame,
+    ground: Color,
+) {
+    let Frame { height, scale, margin, .. } = *frame;
+    let h = head.1 - head.0;
+    // The column painted what lies above its first row here; that goes first.
+    ground_band(scene, x, width, margin, margin + h, ground, frame);
+    let clip = Rect::new(
+        x as f64 * scale,
+        margin as f64 * scale,
+        (x + width) as f64 * scale,
+        (margin + h) as f64 * scale,
+    );
+    scene.push_clip_layer(Affine::IDENTITY, &clip);
+    doc.set_viewport_scroll(Point { x: 0.0, y: (head.0 - margin) as f64 });
+    let w = (width * scale as f32).round() as u32;
+    let shift = Affine::translate((x as f64 * scale, 0.0));
+    let mut shifted = Compose { inner: &mut *scene, shift, reset: false };
+    blitz_paint::paint_scene(&mut shifted, doc, scale, w, height);
+    soft_hyphens(&mut shifted, doc, scale, height);
+    scene.pop_layer();
+}
+
 /// Fill a horizontal band of one column with the page ground, in CSS pixels.
 fn ground_band(
     scene: &mut impl PaintScene,

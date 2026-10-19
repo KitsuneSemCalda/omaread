@@ -107,18 +107,21 @@ pub fn paginate_dom(dom: &BaseDocument, page_height: f32) -> Pages {
 /// replaced elements contribute their whole box.
 pub fn collect_atoms(dom: &BaseDocument) -> Vec<Atom> {
     let mut atoms = Vec::new();
-    // (absolute y of each cell, height, owning table id) before banding.
-    let mut cells: Vec<(f32, f32, usize)> = Vec::new();
+    // (absolute y of each cell, height, owning table id, a header cell) before
+    // banding.
+    let mut cells: Vec<(f32, f32, usize, bool)> = Vec::new();
     // Atoms found inside a table, held back to be absorbed into row bands.
     let mut in_table: Vec<Atom> = Vec::new();
 
+    #[allow(clippy::too_many_arguments)]
     fn walk(
         dom: &BaseDocument,
         id: usize,
         parent_y: f32,
         table: Option<usize>,
+        thead: bool,
         atoms: &mut Vec<Atom>,
-        cells: &mut Vec<(f32, f32, usize)>,
+        cells: &mut Vec<(f32, f32, usize, bool)>,
         in_table: &mut Vec<Atom>,
     ) {
         let Some(node) = dom.get_node(id) else { return };
@@ -126,15 +129,17 @@ pub fn collect_atoms(dom: &BaseDocument) -> Vec<Atom> {
         let abs_y = parent_y + l.location.y;
 
         let mut table = table;
+        let mut thead = thead;
 
         if let blitz_dom::NodeData::Element(el) = &node.data {
             let tag = el.name.local.as_ref();
 
             match tag {
-                "table" => table = Some(id),
+                "table" => (table, thead) = (Some(id), false),
+                "thead" => thead = true,
                 "td" | "th" => {
                     if let Some(t) = table {
-                        cells.push((abs_y, l.size.height, t));
+                        cells.push((abs_y, l.size.height, t, thead || tag == "th"));
                     }
                 }
                 "img" | "svg" | "hr" | "video" if l.size.height > 0.0 => {
@@ -192,29 +197,36 @@ pub fn collect_atoms(dom: &BaseDocument) -> Vec<Atom> {
         }
 
         for child in &node.children {
-            walk(dom, *child, abs_y, table, atoms, cells, in_table);
+            walk(dom, *child, abs_y, table, thead, atoms, cells, in_table);
         }
     }
 
-    walk(dom, 0, 0.0, None, &mut atoms, &mut cells, &mut in_table);
+    walk(dom, 0, 0.0, None, false, &mut atoms, &mut cells, &mut in_table);
 
-    // Band the cells: same table, same top (within a pixel) is one row.
+    // Band the cells: same table, same top (within a pixel) is one row. A
+    // table's header is its leading rows made only of header cells.
     let mut bands: Vec<Atom> = Vec::new();
     cells.sort_by(|a, b| a.2.cmp(&b.2).then(a.0.total_cmp(&b.0)));
     let mut i = 0;
+    let mut leading: Option<usize> = None;
     while i < cells.len() {
-        let (top, mut height, table) = cells[i];
+        let (top, mut height, table, mut head) = cells[i];
         let mut j = i + 1;
         while j < cells.len() && cells[j].2 == table && (cells[j].0 - top).abs() < 1.0 {
             height = height.max(cells[j].1);
+            head &= cells[j].3;
             j += 1;
         }
+        // Still in this table's leading header rows?
+        let first = i == 0 || cells[i - 1].2 != table;
+        head &= first || leading == Some(table);
+        leading = head.then_some(table);
         if height > 0.0 {
             bands.push(Atom {
                 top,
                 bottom: top + height,
                 group: table,
-                kind: AtomKind::Row,
+                kind: if head { AtomKind::Head } else { AtomKind::Row },
                 keep_with_next: false,
             });
         }
@@ -327,9 +339,7 @@ pub fn load(
             let pages = paginate_dom(&doc, page_height);
             Ok(Chapter { doc, index, pages })
         }
-        Err(()) => Err(format!(
-            "the layout engine panicked on chapter {index} ({href}); skipping it"
-        )),
+        Err(()) => Err(format!("{PANICKED} on chapter {index} ({href}); skipping it")),
     }
 }
 
@@ -362,6 +372,10 @@ fn title_page(title: &str, author: &str) -> String {
         title = crate::grid::escape(title),
     )
 }
+
+/// How `load` words an engine panic, so a caller can tell it from a chapter
+/// that is simply missing from the archive.
+pub const PANICKED: &str = "the layout engine panicked";
 
 /// Parse, style and lay out one document. Returns `Err(())` if the engine panicked.
 fn build(

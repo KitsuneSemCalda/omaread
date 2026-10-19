@@ -16,6 +16,9 @@ pub enum AtomKind {
     Line,
     /// A table row band, derived from cell geometry (`<tr>` carries no box).
     Row,
+    /// A row of a table's header: the leading rows of `<thead>` or of `<th>`
+    /// cells. Repeated at the top of every page the table continues onto.
+    Head,
     /// An unbreakable block: an image, a rule, a replaced element.
     Block,
 }
@@ -56,12 +59,20 @@ const ORPHANS: usize = 2;
 /// Minimum lines of a paragraph carried to the head of a page.
 const WIDOWS: usize = 2;
 
+/// A header no taller than this share of a page is repeated; a taller one
+/// would leave the rows it heads too little room to be worth it.
+const MAX_HEAD_SHARE: f32 = 0.5;
+
 /// Page boundaries as offsets into the flow. Always starts with 0.0.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pages {
     pub tops: Vec<f32>,
     pub page_height: f32,
     pub content_height: f32,
+    /// Per page, the flow range of a table header repeated above its content:
+    /// the page starts inside a table whose header is on an earlier page. Empty
+    /// is the same as all `None`.
+    pub heads: Vec<Option<(f32, f32)>>,
 }
 
 impl Pages {
@@ -88,7 +99,40 @@ impl Pages {
             Some(&next) => next,
             None => self.content_height,
         };
-        (next - top).clamp(0.0, self.page_height)
+        (next - top).clamp(0.0, (self.page_height - self.head_height(page)).max(0.0))
+    }
+
+    /// The table header repeated at the top of this page, as a flow range.
+    pub fn head_of(&self, page: usize) -> Option<(f32, f32)> {
+        self.heads.get(page).copied().flatten()
+    }
+
+    fn head_height(&self, page: usize) -> f32 {
+        self.head_of(page).map_or(0.0, |(t, b)| b - t)
+    }
+
+    /// The flow offset painted at the top of the page: its content is pushed
+    /// down by the header repeated above it, so this sits that much above
+    /// `top_of`. What the painter scrolls to.
+    pub fn origin(&self, page: usize) -> f32 {
+        self.top_of(page) - self.head_height(page)
+    }
+
+    /// The flow a page paints from its top margin down: `(origin, height)`.
+    /// Wider than `top_of`/`extent_of` by the repeated header, whose band the
+    /// painter then covers with the header itself.
+    pub fn slice(&self, page: usize) -> (f32, f32) {
+        (self.origin(page), self.extent_of(page) + self.head_height(page))
+    }
+
+    /// The flow offset under a point `y` CSS pixels below the page's top
+    /// margin. Inside a repeated header that is the header itself, so a click
+    /// or a selection there lands on the words it shows.
+    pub fn flow_y(&self, page: usize, y: f32) -> f32 {
+        match self.head_of(page) {
+            Some((t, b)) if y < b - t => t + y,
+            _ => self.origin(page) + y,
+        }
     }
 
     /// Which page a flow offset falls on. Used to keep the reader's place across
@@ -109,18 +153,21 @@ pub fn paginate(atoms: &[Atom], content_height: f32, page_height: f32) -> Pages 
     atoms.sort_by(|a, b| a.top.total_cmp(&b.top).then(a.bottom.total_cmp(&b.bottom)));
 
     let mut tops = vec![0.0f32];
+    let mut heads = vec![None];
 
     if page_height <= 0.0 {
-        return Pages { tops, page_height, content_height };
+        return Pages { tops, page_height, content_height, heads };
     }
 
     let mut top = 0.0f32;
+    // Room the current page's repeated header takes from it.
+    let mut head_h = 0.0f32;
     // Each iteration must advance `top`; the guard is belt and braces against a
     // pathological atom list turning this into a hang.
     let limit = (content_height / page_height).ceil() as usize + atoms.len() + 2;
 
     for _ in 0..limit {
-        let ideal = top + page_height;
+        let ideal = top + page_height - head_h;
         if ideal >= content_height {
             break;
         }
@@ -134,11 +181,36 @@ pub fn paginate(atoms: &[Atom], content_height: f32, page_height: f32) -> Pages 
         }
         let cut = if cut <= top { ideal } else { cut };
 
+        let head = repeated_head(&atoms, cut, page_height);
+        head_h = head.map_or(0.0, |(t, b)| b - t);
         tops.push(cut);
+        heads.push(head);
         top = cut;
     }
 
-    Pages { tops, page_height, content_height }
+    Pages { tops, page_height, content_height, heads }
+}
+
+/// The header to repeat on a page starting at `cut`: the page opens on a body
+/// row of a table whose header rows all lie above it.
+fn repeated_head(atoms: &[Atom], cut: f32, page_height: f32) -> Option<(f32, f32)> {
+    let first = atoms
+        .iter()
+        .filter(|a| a.top >= cut - EDGE_EPS)
+        .min_by(|p, q| p.top.total_cmp(&q.top))?;
+    if first.kind != AtomKind::Row {
+        return None;
+    }
+    let head = atoms.iter().filter(|a| a.group == first.group && a.kind == AtomKind::Head);
+    let (top, bottom) = head.fold((f32::INFINITY, f32::NEG_INFINITY), |(t, b), a| {
+        (t.min(a.top), b.max(a.bottom))
+    });
+    let h = bottom - top;
+    // A row that fits a page but not under the header keeps the whole page:
+    // a header is a courtesy, a row cut through is a defect.
+    let fits = first.bottom - first.top <= page_height - h;
+    (h > 0.0 && bottom <= cut + EDGE_EPS && h <= page_height * MAX_HEAD_SHARE && fits)
+        .then_some((top, bottom))
 }
 
 /// Largest legal break position at or below `ideal`, or `top` if none exists.
@@ -186,8 +258,12 @@ fn apply_rules(atoms: &[Atom], top: f32, y: f32, strict: bool) -> f32 {
     // line. Leave it where it is.
     let movable = |group: usize| group_top(atoms, group) > top;
 
-    // 2. A heading is never stranded at the foot of a page.
+    // 2. A heading is never stranded at the foot of a page, and neither is a
+    // table's header: it would be repeated over the rows it heads anyway.
     if before.keep_with_next && before.group != after.group && movable(before.group) {
+        return group_top(atoms, before.group);
+    }
+    if before.kind == AtomKind::Head && after.group == before.group && movable(before.group) {
         return group_top(atoms, before.group);
     }
 
@@ -245,6 +321,7 @@ mod tests {
             tops: vec![0.0, 872.0, 1744.0],
             page_height: 900.0,
             content_height: 2500.0,
+            heads: Vec::new(),
         };
         assert_eq!(pages.extent_of(0), 872.0, "a break snaps up, so a page ends short");
         assert_eq!(pages.extent_of(1), 872.0);
@@ -259,6 +336,7 @@ mod tests {
             tops: vec![0.0],
             page_height: 900.0,
             content_height: 5000.0,
+            heads: Vec::new(),
         };
         assert_eq!(pages.extent_of(0), 900.0);
     }
@@ -399,6 +477,72 @@ mod tests {
         assert!(pages.count() > 1);
         for &t in &pages.tops {
             assert!(is_legal(&atoms, t), "break cuts a table row at {t}");
+        }
+    }
+
+    /// A table running onto more pages carries its header to the top of each,
+    /// and the page shrinks by the header so nothing is pushed off its foot.
+    #[test]
+    fn a_table_header_repeats_on_every_continuation_page() {
+        let row = |i: usize, kind| Atom {
+            top: 100.0 + i as f32 * 50.0,
+            bottom: 150.0 + i as f32 * 50.0,
+            group: 7,
+            kind,
+            keep_with_next: false,
+        };
+        let mut atoms = para(1, 0.0, 25.0, 4); // 0..100
+        atoms.push(row(0, AtomKind::Head)); // 100..150
+        atoms.extend((1..60).map(|i| row(i, AtomKind::Row)));
+        let end = 100.0 + 60.0 * 50.0;
+
+        let pages = paginate(&atoms, end, 520.0);
+        assert!(pages.count() > 3);
+        assert_eq!(pages.head_of(0), None, "the header is in place on its own page");
+        for p in 1..pages.count() {
+            assert_eq!(pages.head_of(p), Some((100.0, 150.0)), "page {p}");
+            assert!(pages.extent_of(p) <= 470.0, "page {p} overflows below its header");
+            assert_eq!(pages.origin(p), pages.top_of(p) - 50.0);
+            // Under the header the flow is the page's own; on it, the header's.
+            assert_eq!(pages.flow_y(p, 10.0), 110.0);
+            assert_eq!(pages.flow_y(p, 60.0), pages.top_of(p) + 10.0);
+        }
+        // Continuation pages hold less than the first, by the header.
+        for w in pages.tops[1..].windows(2) {
+            assert!(w[1] - w[0] <= 470.0 + EDGE_EPS, "{:?}", pages.tops);
+        }
+    }
+
+    /// A header with no rows after it on the page would be repeated over them
+    /// anyway: it moves down with them instead.
+    #[test]
+    fn a_table_header_is_never_left_at_the_foot_of_a_page() {
+        let mut atoms = para(1, 0.0, 30.0, 16); // 0..480
+        let row = |top: f32, kind| Atom { top, bottom: top + 40.0, group: 7, kind, keep_with_next: false };
+        atoms.push(row(480.0, AtomKind::Head)); // 480..520, the last thing to fit
+        atoms.extend((0..20).map(|i| row(520.0 + i as f32 * 40.0, AtomKind::Row)));
+        let pages = paginate(&atoms, 1320.0, 530.0);
+        assert_eq!(pages.tops[1], 480.0, "{:?}", pages.tops);
+        assert_eq!(pages.head_of(1), None, "the header starts the page itself");
+    }
+
+    /// A row that only fits a whole page gets one: the header gives way.
+    #[test]
+    fn a_header_gives_way_to_a_row_that_needs_the_whole_page() {
+        let row = |top, bottom, kind| Atom { top, bottom, group: 7, kind, keep_with_next: false };
+        let atoms = vec![
+            row(0.0, 50.0, AtomKind::Head),
+            row(50.0, 300.0, AtomKind::Row),
+            row(300.0, 780.0, AtomKind::Row), // fits 500, not the 450 under a header
+            row(780.0, 830.0, AtomKind::Row),
+            row(830.0, 880.0, AtomKind::Row),
+        ];
+        let pages = paginate(&atoms, 880.0, 500.0);
+        assert_eq!(pages.tops, vec![0.0, 300.0, 780.0]);
+        assert_eq!(pages.head_of(1), None, "the tall row takes the whole page");
+        assert_eq!(pages.head_of(2), Some((0.0, 50.0)), "and the header is back after it");
+        for &t in &pages.tops {
+            assert!(is_legal(&atoms, t));
         }
     }
 

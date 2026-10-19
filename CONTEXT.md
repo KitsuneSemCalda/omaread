@@ -204,7 +204,13 @@ The model:
   smaller text) brings the second column back.
 - Widows/orphans and "never break directly after a heading" are **paginator
   rules**, not CSS. The `orphans`/`widows` properties do not exist here.
-- Table page breaks: repeat the header row on each continuation page.
+- Table page breaks: the header row repeats on each continuation page. A
+  table's header is its leading rows of `<thead>` or all-`<th>` cells
+  (`AtomKind::Head`). A page that opens on a body row of such a table is
+  shortened by the header, which is painted into the band left above it
+  (`Pages::head_of`, `paint::head`). The header never sits alone at the foot of
+  a page, and gives way when it is over half a page or when the row below needs
+  the whole page.
 
 Because pages are a view over a stable flow, changing the font size re-flows and
 re-paginates without invalidating anything persisted (see CFI below).
@@ -308,8 +314,11 @@ when; that data must not be able to leave.
 - `catch_unwind` around chapter layout and paint. A book that panics the engine
   renders an error page naming the book and chapter; the app and the library
   survive.
-- Book-level quarantine (a book that panics twice gets flagged rather than
-  reopened) is a 1.0 nicety, not needed early.
+- Book-level quarantine: every opening on which the engine panics (laying out a
+  chapter, relayout, a resource, painting) counts once in `books.panics`. At two
+  the card is dimmed and says it crashed the reader, and opening it shows a note
+  instead; opening it again goes ahead. Opening from the command line is
+  never stopped.
 
 This is not hypothetical. See §8 — real books from the test library panicked
 `blitz-dom` twice within minutes of first contact.

@@ -52,7 +52,13 @@ pub struct BookRow {
     /// How far through, 0..1. Zero for a book never opened.
     pub progress: f32,
     pub tags: Vec<String>,
+    /// The engine panicked on it on `QUARANTINE_AFTER` openings: the library
+    /// flags it and asks before opening it again (CONTEXT.md §6).
+    pub quarantined: bool,
 }
+
+/// Openings that panicked the engine before a book is quarantined.
+pub const QUARANTINE_AFTER: i64 = 2;
 
 /// A bookmark or a highlight. Both anchor to a CFI, so both live in one table:
 /// a bookmark is a highlight with no span.
@@ -121,6 +127,8 @@ impl Db {
             // How far through, 0..1 — the same figure the reading HUD shows.
             // Recomputing it for a shelf of 361 would mean opening 361 books.
             "progress REAL NOT NULL DEFAULT 0",
+            // Openings on which the engine panicked, for quarantine.
+            "panics INTEGER NOT NULL DEFAULT 0",
         ] {
             let _ = conn.execute(&format!("ALTER TABLE books ADD COLUMN {col}"), []);
         }
@@ -266,7 +274,7 @@ impl Db {
         args.extend(fts);
         let sql = format!(
             "SELECT file_hash, file_path, title, author, cover IS NOT NULL, managed, missing,
-                    last_cfi IS NOT NULL, progress
+                    last_cfi IS NOT NULL, progress, panics >= {QUARANTINE_AFTER}
              FROM books
              WHERE (?1 = '%%' OR title LIKE ?1 ESCAPE '\\' OR author LIKE ?1 ESCAPE '\\'{full_text})
              ORDER BY {order}"
@@ -286,6 +294,7 @@ impl Db {
                     started: r.get::<_, i64>(7)? != 0,
                     progress: r.get::<_, f64>(8)? as f32,
                     tags: Vec::new(),
+                    quarantined: r.get::<_, i64>(9)? != 0,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -297,7 +306,7 @@ impl Db {
     fn books_tagged(&self, prefix: &str, order: &str) -> Result<Vec<BookRow>, String> {
         let sql = format!(
             "SELECT file_hash, file_path, title, author, cover IS NOT NULL, managed, missing,
-                    last_cfi IS NOT NULL, progress
+                    last_cfi IS NOT NULL, progress, panics >= {QUARANTINE_AFTER}
              FROM books
              WHERE file_hash IN (SELECT file_hash FROM tags WHERE tag LIKE ?1)
              ORDER BY {order}"
@@ -317,6 +326,7 @@ impl Db {
                     started: r.get::<_, i64>(7)? != 0,
                     progress: r.get::<_, f64>(8)? as f32,
                     tags: Vec::new(),
+                    quarantined: r.get::<_, i64>(9)? != 0,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -478,6 +488,17 @@ impl Db {
         self.conn
             .execute("DELETE FROM marks WHERE id = ?1", params![id])
             .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Count an opening on which the engine panicked; returns the new count.
+    pub fn note_panic(&self, hash: &str) -> Result<i64, String> {
+        self.conn
+            .query_row(
+                "UPDATE books SET panics = panics + 1 WHERE file_hash = ?1 RETURNING panics",
+                params![hash],
+                |r| r.get(0),
+            )
             .map_err(|e| e.to_string())
     }
 
@@ -780,6 +801,24 @@ mod tests {
         }
 
         assert!(db.suggestions("b", 6).is_empty(), "one letter suggests everything");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// One panicking opening is bad luck; the second quarantines the book.
+    #[test]
+    fn a_book_that_panics_twice_is_quarantined() {
+        let dir = std::env::temp_dir().join(format!("omaread-quar-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = super::Db::open_at(dir.join("q.db")).unwrap();
+        let book = super::BookRow { hash: "h1".into(), path: "/h1.epub".into(), ..Default::default() };
+        db.upsert_book(&book).unwrap();
+        let flagged = || db.books("", super::Sort::Title).unwrap()[0].quarantined;
+
+        assert_eq!(db.note_panic("h1"), Ok(1));
+        assert!(!flagged(), "one panic is not a pattern");
+        assert_eq!(db.note_panic("h1"), Ok(2));
+        assert!(flagged());
+        assert!(db.note_panic("unknown").is_err(), "no row, nothing counted");
         std::fs::remove_dir_all(&dir).ok();
     }
 
