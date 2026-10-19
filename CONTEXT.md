@@ -783,6 +783,15 @@ numbers, never from a redraw. At a layout that has not been measured the readout
 falls back to the chapter's own numbering, which is true, rather than an estimate
 that is not. Stable at 393 pages from chapters 8, 60 and 120 of the same book.
 
+It runs **on its own thread**. On the window's thread that click froze the page
+for the whole measure — 3.3s for Géron's 31 chapters. The thread lays out its own
+documents (Stylo and blitz-dom take two threads laying out at once: Géron
+measured while the window's thread loaded 43 chapters gave the same 977 pages as
+a measure alone), sends the counts back, and wakes the window; they are stored,
+and used only if the book and layout on screen are still the ones measured. The
+`ERROR: Duplicate attribute` lines it prints are blitz-html echoing html5ever's
+parse errors for the book's markup: noise, not failures.
+
 **Removing a highlight is in the menu.** A press inside a stored highlight
 remembers it, and the Highlight control becomes Remove — the useful offer once
 the pointer is already inside one. `x` in the marks list still works.

@@ -626,6 +626,9 @@ struct App {
     /// what lets the readout say "page 27 of 336" and mean it.
     chapter_pages: Option<Vec<usize>>,
     pages_layout: String,
+    /// Page counts being measured off the window's thread: for which book, at
+    /// which layout, and where the answer will arrive.
+    measuring: Option<(String, String, Receiver<Vec<usize>>)>,
     /// In-book search: the query, and whether the contents view is showing hits
     /// instead of navigation. Both lists are "places in this book", so they are
     /// the same view.
@@ -734,6 +737,7 @@ impl App {
             sel_mark: None,
             chapter_pages: None,
             pages_layout: String::new(),
+            measuring: None,
             find: String::new(),
             toc_mode: TocMode::Contents,
             marks: Vec::new(),
@@ -1908,6 +1912,11 @@ impl App {
     /// Cached in the database per book and layout, so this runs once: three
     /// seconds for a 131-chapter book, and instant every time after. Called from
     /// the click that asks for page numbers, never from a redraw.
+    ///
+    /// It runs on its own thread: every chapter is laid out, images and all, and
+    /// on the window's thread that held the page still for as long. Until the
+    /// counts arrive (`take_measured`) the readout gives the chapter's own
+    /// numbering, as it does for any layout not measured yet.
     fn measure_book(&mut self) {
         let key = self.layout_key();
         if self.pages_layout == key && self.chapter_pages.is_some() {
@@ -1927,30 +1936,57 @@ impl App {
             return;
         }
 
-        println!("omaread: measuring {count} chapters for page numbers…");
-        let started = Instant::now();
-        let pages = chapter::page_counts(
-            &book,
-            &self.style,
-            self.hyphenator.as_ref(),
-            self.column_width(),
-            self.size.1,
-            self.scale,
-            self.page_height(),
-        );
+        if self.measuring.as_ref().is_some_and(|(h, k, _)| *h == self.hash && *k == key) {
+            return;
+        }
 
-        let total: usize = pages.iter().sum();
-        println!(
-            "omaread: {total} pages at {key} ({:.1}s)",
-            started.elapsed().as_secs_f32()
-        );
+        println!("omaread: measuring {count} chapters for page numbers…");
+        let (tx, rx) = channel();
+        let (style, width, height, scale, page_h) =
+            (self.style.clone(), self.column_width(), self.size.1, self.scale, self.page_height());
+        let (window, at) = (self.window.clone(), key.clone());
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let hyphenator = hyphen::Hyphenator_::for_language(&book.language);
+            let pages =
+                chapter::page_counts(&book, &style, hyphenator.as_ref(), width, height, scale, page_h);
+            println!(
+                "omaread: {} pages at {at} ({:.1}s)",
+                pages.iter().sum::<usize>(),
+                started.elapsed().as_secs_f32()
+            );
+            let _ = tx.send(pages);
+            if let Some(w) = window {
+                w.request_redraw();
+            }
+        });
+        self.measuring = Some((self.hash.clone(), key, rx));
+    }
+
+    /// Pick up page counts `measure_book` finished, store them, and use them if
+    /// the book and layout they were measured for are still the ones on screen.
+    fn take_measured(&mut self) {
+        let Some((hash, key, rx)) = &self.measuring else { return };
+        let pages = match rx.try_recv() {
+            Ok(pages) => pages,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            // The thread died: nothing is coming. Asking again starts over.
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.measuring = None;
+                return;
+            }
+        };
         if let Some(db) = self.db.as_ref().and_then(|d| d.lock().ok()) {
-            if let Err(e) = db.save_pagination(&self.hash, &key, &pages) {
+            if let Err(e) = db.save_pagination(hash, key, &pages) {
                 eprintln!("omaread: could not save page counts: {e}");
             }
         }
-        self.chapter_pages = Some(pages);
-        self.pages_layout = key;
+        if *hash == self.hash && *key == self.layout_key() {
+            self.chapter_pages = Some(pages);
+            self.pages_layout = key.clone();
+            self.request_redraw();
+        }
+        self.measuring = None;
     }
 
     /// The stored highlight containing a flow position, if any.
@@ -3995,6 +4031,7 @@ impl ApplicationHandler<accesskit_winit::Event> for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.drain_resources();
+        self.take_measured();
         let now = Instant::now();
 
         if self.exit_at.is_some_and(|at| now >= at) {

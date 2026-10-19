@@ -91,6 +91,7 @@ impl Theme {
 
 /// Reading surface parameters. Measure is fixed by design; only these three are
 /// user-facing (CONTEXT.md §3).
+#[derive(Clone)]
 pub struct ReadingStyle {
     pub theme: Theme,
     /// Multiplier on the 20px base. Clamped to 0.8..=1.6.
