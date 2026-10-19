@@ -169,8 +169,7 @@ omaread --check book.epub ...   # headless conformance run: panics, cut lines, s
 ```
 
 CI runs the test suite and `--check` over the W3C EPUB test suite and the
-epubtest.org books. [`CONTEXT.md`](CONTEXT.md) is the design record: what was
-decided, and why. Read it before proposing a change of direction.
+epubtest.org books.
 
 ## License
 
