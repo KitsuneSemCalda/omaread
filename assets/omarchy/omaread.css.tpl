@@ -8,12 +8,14 @@
  * which is where Omaread reads it. Press F5 in the library to pick up a new
  * theme without restarting.
  *
- * Only the app chrome follows the system theme — library, contents, HUD. The
- * reading surface keeps its own White/Sepia/Grey/Night, because a palette tuned
- * for a terminal is not tuned for 400 pages of prose (CONTEXT.md §11).
+ * The app chrome always follows the system theme. The reading surface does too
+ * by default (the "Omarchy" theme, CONTEXT.md §11); White/Sepia/Grey/Night stay
+ * one `t` away.
  *
  * Omaread reads exactly these four properties and ignores everything else, so
- * it is safe to edit the mappings to taste.
+ * it is safe to edit the mappings to taste. `--subtle` is required but not used:
+ * Omaread fades `--fg` toward `--bg` instead, because `muted` is illegible as
+ * text in several themes.
  */
 
 :root {

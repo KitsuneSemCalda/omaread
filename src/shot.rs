@@ -12,9 +12,9 @@ use crate::book::Book;
 use crate::chapter;
 use crate::hud;
 use crate::paint::{self, Frame};
-use crate::style::{PAGE_MARGIN_EM, ReadingStyle, Theme};
+use crate::style::{self, PAGE_MARGIN_EM, ReadingStyle, Theme};
 use anyrender::ImageRenderer;
-use anyrender_vello::VelloImageRenderer;
+use anyrender_vello_cpu::VelloCpuImageRenderer as VelloImageRenderer;
 use blitz_dom::net::Resource;
 use blitz_traits::net::{NetCallback, SharedCallback};
 use peniko::Color;
@@ -48,17 +48,19 @@ pub fn run(args: &[String]) -> i32 {
         .clamp(1, 2);
     let col_w = w / cols;
     let with_hud = rest.iter().any(|a| a == "hud");
-    let theme = match rest.iter().find(|a| *a != "hud").map(String::as_str) {
-        Some("sepia") => Theme::Sepia,
-        Some("grey") => Theme::Grey,
-        Some("night") => Theme::Night,
-        _ => Theme::White,
-    };
+    let theme = rest
+        .iter()
+        .find(|a| *a != "hud")
+        .and_then(|a| Theme::named(a))
+        .unwrap_or(Theme::White);
 
-    let style = ReadingStyle { theme, ..ReadingStyle::default() };
+    // Only the Omarchy theme reads the desktop palette, so every other shot is
+    // the same on any machine.
+    let omarchy = (theme == Theme::Omarchy).then(style::omarchy_chrome).flatten();
+    let style = ReadingStyle { theme, omarchy, ..ReadingStyle::default() };
     let margin = PAGE_MARGIN_EM * style.font_px();
     let page_height = (h as f32 - 2.0 * margin).max(1.0);
-    let make_viewport = || chapter::viewport(col_w, h, 1.0, theme == Theme::Night);
+    let make_viewport = || chapter::viewport(col_w, h, 1.0, style.dark());
 
     let book = match Book::open(path) {
         Ok(b) => b,
@@ -128,13 +130,13 @@ pub fn run(args: &[String]) -> i32 {
                 false => format!("{}%", (book.progress(index, within) * 100.0).round() as u8),
             };
 
-            let (_, fg, subtle, panel) = theme.chrome_colors();
+            let (_, fg, subtle, panel) = style.chrome();
             chapter::layout_document(
                 hud::html(&book.title, &readout, cols as usize, false, h as f32, None),
-                hud::stylesheet(fg, subtle, panel),
+                hud::stylesheet(&fg, &subtle, &panel),
                 None,
                 // The HUD spans the window, not a column.
-                chapter::viewport(w, h, 1.0, theme == Theme::Night),
+                chapter::viewport(w, h, 1.0, style.dark()),
                 page_height,
             )
         })
@@ -152,7 +154,7 @@ pub fn run(args: &[String]) -> i32 {
         );
     }
 
-    let [r, g, b] = theme.background_rgb();
+    let [r, g, b] = style.background_rgb();
     // `OMAREAD_SHOT_NOMASK=1` drops the bottom mask down to the window edge, so
     // any ink it would normally have covered shows up instead of vanishing.
     // That is how you tell "the page ends here" from "the page is being cut".
@@ -224,7 +226,7 @@ pub fn run(args: &[String]) -> i32 {
                     eprintln!("ICONS {icons:?}");
                 }
                 paint::overlay(scene, &mut c.doc, &frame);
-                let ink = crate::parse_hex(theme.chrome_colors().1);
+                let ink = crate::parse_hex(&style.chrome().1);
                 for (icon, rect) in icons {
                     paint::icon(scene, icon, rect, ink, 1.0);
                 }

@@ -16,7 +16,7 @@ here first.
 - **EPUB only.** AZW3 and MOBI are converted to EPUB at import. PDF is explicitly
   out of scope — zathura exists and is good.
 - **Pure Rust, no webview.** No WebKitGTK, no Servo embedding, no Electron.
-- **Wayland-native**, rendered on the GPU via wgpu.
+- **Wayland-native**, rendered on the CPU (vello_cpu → softbuffer). No GPU stack.
 - **Hermetic.** The application never makes a network request.
 - **GPL-3.0-or-later.**
 
@@ -32,7 +32,7 @@ compatibility obligations until 1.0.
 | HTML parsing | `blitz-html` (`HtmlDocument::from_html`) |
 | DOM + CSS + layout | `blitz-dom` (Stylo + Taffy + Parley) |
 | Text shaping | `parley` (pinned at 0.6.0 by blitz-dom) |
-| Paint | `anyrender_vello` → wgpu |
+| Paint | `anyrender_vello_cpu` → softbuffer |
 | Windowing | `winit` |
 | Storage | SQLite (`rusqlite`, bundled) + FTS5 |
 | i18n | `fluent-rs` |
@@ -112,7 +112,7 @@ pre / code      bundled mono, 0.9em, tinted panel, pre-wrap (never scrolls)
 img             block, centered, max-width: 100%, max-height: 85vh
 figcaption      0.85em, subtle, ragged
 links           internal → navigate; external → confirm dialog → xdg-open
-themes          White / Sepia / Grey / Night
+themes          Omarchy (desktop palette, default) / White / Sepia / Grey / Night
 TOC panel       light-grey ground (app chrome, not book CSS)
 ```
 
@@ -245,31 +245,15 @@ This is not hypothetical. See §8 — real books from the test library panicked
 
 `main` ends with `std::process::exit(0)`, deliberately.
 
-**Every clean exit dumped core.** Dropping the renderer tears down wgpu's
-GLES/EGL instance — a backend this app never renders with, which exists only
-because wgpu enumerates all of them — and NVIDIA's egl-wayland layer then
-marshals a Wayland request on a dead proxy:
-
-```
-wl_proxy_marshal_flags            libwayland-client   <- SIGSEGV
-libnvidia-egl-wayland2 / libEGL_nvidia
-<wgpu_hal::gles::egl::Inner as Drop>::drop
-drop_glue<VelloWindowRenderer>
-drop_glue<App>                    <- end of main
-```
-
-Ten cores on this machine before it was looked at, every one the same stack.
-
-Two fixes were tried and rejected as insufficient before this one: releasing the
-surface via `WindowRenderer::suspend()` in winit's `exiting` hook (the crash is
-in the *instance*, not the surface), and the observation that `App` dropped
-`window` before `renderer` (true, and worth knowing, but not the cause). Only
-skipping the teardown works.
+It began as a workaround: under wgpu, dropping the renderer tore down a GLES/EGL
+instance and NVIDIA's egl-wayland layer segfaulted on a dead Wayland proxy, so
+every clean exit dumped core. The CPU renderer (§12b) removed wgpu, and with it
+that crash, but the `exit` stays: quitting should not wait on freeing every
+document and glyph cache.
 
 Nothing here needs a destructor to be correct: reading position, marks and tags
 are committed to SQLite before the loop returns, and WAL means a process that
-simply stops loses nothing. The OS reclaims the GPU and the fonts. Remove the
-`exit` when wgpu or the driver can survive its own teardown.
+simply stops loses nothing.
 
 `OMAREAD_EXIT_AFTER=<ms>` exists because of this: shutdown is a real code path
 with real bugs in it, and it could not be reached from a script without a window
@@ -899,11 +883,18 @@ public search results suggest. Considerably more mature than advertised.
 Omarchy is the reference platform. Nothing here is a hard dependency — every
 integration degrades to a sensible default elsewhere.
 
-- **Theming is split.** App chrome (library grid, TOC panel, settings) follows the
-  active Omarchy theme. The **reading surface keeps its own four themes**
-  (White / Sepia / Grey / Night) and ignores the system palette. Sepia is a paper
-  decision, not a UI one, and a palette tuned for a terminal is not tuned for 400
-  pages of prose. Off Omarchy, chrome falls back to its own neutral palette.
+- **The reader follows the desktop.** App chrome (library grid, TOC panel,
+  settings) always uses the active Omarchy theme, and so does the reading
+  surface by default — the **Omarchy** reading theme — because Omaread is part of
+  Omarchy and visual coherence with it is the point. The four paper themes
+  (White / Sepia / Grey / Night) stay, one `t` away, for those who want paper;
+  an explicit choice is remembered over the default. Off Omarchy there is no
+  palette, the Omarchy theme is not offered, and the default is Sepia.
+  *This reverses an earlier decision* that the page should ignore the system
+  palette because a terminal palette is not tuned for prose. The one place that
+  showed was `muted`, which several themes put barely off the background, so
+  Omaread never uses it as text: captions, link underlines and HUD labels are
+  `--fg` faded 60% toward `--bg` instead, legible in every stock theme.
 - Ship an `omaread.css.tpl` for Omarchy's template-rendering theme mechanism
   (cf. `~/.config/omarchy/themed/alacritty.toml.tpl.sample`) rather than parsing
   theme files ourselves. **Done**, in `assets/omarchy/`. Omarchy renders every
@@ -1022,11 +1013,39 @@ be seen for a long time. The substitute:
 That corpus is the only external pressure the renderer will get. Treat a new
 panic in it as a release blocker.
 
+### CPU renderer instead of the GPU
+
+The GPU stack was most of the resident memory. Same machine (RTX 5060 Ti,
+Vulkan), same books, RSS a few seconds after the window is up:
+
+| | wgpu + vello (Vulkan) | vello_cpu + softbuffer |
+|---|---|---|
+| Library | 325–617 MB | **122–167 MB** |
+| Prose (Postman) | 148–150 MB | **82–88 MB** |
+| Géron ch.9 (images) | 272–306 MB | **197–254 MB** |
+
+Reading frames are 9–18ms at a tiled 1526×1678 window and 18ms full-screen with
+the HUD; Géron's image pages reach ~38ms. That is a frame or two slower than the
+GPU's 1–5ms and invisible on a page turn. It also removes the dependency on the
+driver: a driver updated without a reboot no longer leaves the app on Mesa's
+software GL.
+
+**vello_cpu 0.0.4's bilinear sampler is slow: ~10ms a cover, every frame.** A
+library page with covers took ~300ms to paint. `net::FitCover` resizes each
+decoded cover to the card's exact pixel size, and the grid paints covers with
+`image-rendering: pixelated` — nearest sampling, exact when the image is 1:1.
+Library frames went from ~300ms to ~25ms, and a cover's RGBA to a quarter.
+
+Still there: anyrender_vello_cpu 0.8.1 reconverts every image on every frame (its
+`convert_image_cached` is written but not called), ~13ms of a library frame. A
+newer anyrender fixes it, which needs a blitz upgrade.
+
 ## 14. Rejected, with reasons
 
 | Rejected | Why |
 |---|---|
 | WebKitGTK webview | Wanted pure Rust. Cost is accepted knowingly: everything a browser gives free is now ours to build. |
+| GPU rendering (wgpu + vello) | Twice the RAM of the CPU renderer for frames nobody can tell apart on a page turn (§12b). |
 | Iced | Once you own a CSS engine, the library grid is HTML/CSS. Two layout systems and two paint paths for no gain. |
 | Full CSS cascade | The whitelist is what makes a hand-owned engine tractable, and a uniform reading surface is a design position. |
 | Honoring book `@font-face` | Inconsistent typography, plus a de-obfuscation subsystem, for nothing. |

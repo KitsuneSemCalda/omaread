@@ -17,21 +17,36 @@ pub const GUTTER_EM: f32 = 1.75;
 /// page and leave every page in between running to the window edge.
 pub const PAGE_MARGIN_EM: f32 = 2.5;
 
-/// Reading themes. Paper decisions, deliberately independent of the desktop theme.
+/// Reading themes. Four paper themes, plus the active Omarchy theme for visual
+/// coherence with the desktop (CONTEXT.md §11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Theme {
     White,
     Sepia,
     Grey,
     Night,
+    /// Colours from `ReadingStyle::omarchy`; Sepia's when there is none.
+    Omarchy,
 }
 
 impl Theme {
+    /// A theme by its lowercase name, as settings and the menu spell it.
+    pub fn named(name: &str) -> Option<Theme> {
+        Some(match name {
+            "white" => Theme::White,
+            "sepia" => Theme::Sepia,
+            "grey" => Theme::Grey,
+            "night" => Theme::Night,
+            "omarchy" => Theme::Omarchy,
+            _ => return None,
+        })
+    }
+
     /// Page background as linear RGB components, for painting the window ground.
     pub fn background_rgb(self) -> [u8; 3] {
         match self {
             Theme::White => [0xfd, 0xfd, 0xfe],
-            Theme::Sepia => [0xf8, 0xf1, 0xe3],
+            Theme::Sepia | Theme::Omarchy => [0xf8, 0xf1, 0xe3],
             Theme::Grey => [0xd6, 0xd6, 0xd2],
             Theme::Night => [0x14, 0x14, 0x16],
         }
@@ -39,13 +54,12 @@ impl Theme {
 
     /// Palette for the app chrome — library grid, panels.
     ///
-    /// Off Omarchy this is the reader's own neutral ground. Following the
-    /// active Omarchy theme here (CONTEXT.md §11) is the integration still to
-    /// come; the *reading surface* deliberately keeps its own four themes.
+    /// Off Omarchy this is the reader's own neutral ground; on Omarchy the
+    /// chrome uses the rendered palette instead (CONTEXT.md §11).
     pub fn chrome_colors(self) -> (&'static str, &'static str, &'static str, &'static str) {
         match self {
             Theme::White => ("#fbfbfd", "#1c1c1e", "#8e8e93", "#ececf0"),
-            Theme::Sepia => ("#f6efe1", "#4f321c", "#96785f", "#e8ddc6"),
+            Theme::Sepia | Theme::Omarchy => ("#f6efe1", "#4f321c", "#96785f", "#e8ddc6"),
             Theme::Grey => ("#d6d6d2", "#33332f", "#6e6e6a", "#c4c4bf"),
             Theme::Night => ("#111113", "#e5e5ea", "#6e6e73", "#232327"),
         }
@@ -55,7 +69,7 @@ impl Theme {
     fn colors(self) -> (&'static str, &'static str, &'static str) {
         match self {
             Theme::White => ("#fdfdfe", "#1c1c1e", "#8e8e93"),
-            Theme::Sepia => ("#f8f1e3", "#4f321c", "#96785f"),
+            Theme::Sepia | Theme::Omarchy => ("#f8f1e3", "#4f321c", "#96785f"),
             Theme::Grey => ("#d6d6d2", "#33332f", "#6e6e6a"),
             Theme::Night => ("#141416", "#e5e5ea", "#6e6e73"),
         }
@@ -68,17 +82,48 @@ pub struct ReadingStyle {
     pub theme: Theme,
     /// Multiplier on the 20px base. Clamped to 0.8..=1.6.
     pub scale: f32,
+    /// The palette Omarchy rendered (`omarchy_chrome`), if any. The chrome
+    /// always uses it; the page only under `Theme::Omarchy`.
+    pub omarchy: Option<Chrome>,
 }
 
 impl Default for ReadingStyle {
     fn default() -> Self {
-        Self { theme: Theme::Sepia, scale: 1.0 }
+        Self { theme: Theme::Sepia, scale: 1.0, omarchy: None }
     }
 }
 
 impl ReadingStyle {
     pub fn font_px(&self) -> f32 {
         20.0 * self.scale.clamp(0.8, 1.6)
+    }
+
+    /// The Omarchy palette, when it is the one the page is painted in.
+    fn omarchy_page(&self) -> Option<&Chrome> {
+        self.omarchy.as_ref().filter(|_| self.theme == Theme::Omarchy)
+    }
+
+    /// Page background, for painting the window ground.
+    pub fn background_rgb(&self) -> [u8; 3] {
+        match self.omarchy_page() {
+            Some((bg, ..)) => hex_rgb(bg),
+            None => self.theme.background_rgb(),
+        }
+    }
+
+    /// A dark page: Night, or an Omarchy theme with a dark background.
+    pub fn dark(&self) -> bool {
+        let [r, g, b] = self.background_rgb();
+        (299 * r as u32 + 587 * g as u32 + 114 * b as u32) < 128_000
+    }
+
+    /// The app chrome palette: Omarchy's when it rendered one, the reading
+    /// theme's otherwise. Every chrome surface goes through here.
+    pub fn chrome(&self) -> Chrome {
+        self.omarchy.clone().unwrap_or_else(|| {
+            let (bg, fg, subtle, panel) = self.theme.chrome_colors();
+            (bg.into(), fg.into(), subtle.into(), panel.into())
+        })
     }
 
     /// The UA stylesheet for the reading surface.
@@ -88,7 +133,13 @@ impl ReadingStyle {
 /// `body {{ margin: 8px }}` and a bare `p {{ }}` loses to its `p {{ margin: 1em 0 }}`.
 /// The descendant prefix raises specificity just enough to win.
     pub fn stylesheet(&self) -> String {
-        let (bg, fg, subtle) = self.theme.colors();
+        let (bg, fg, subtle) = match self.omarchy_page() {
+            Some((bg, fg, subtle, _)) => (bg.clone(), fg.clone(), subtle.clone()),
+            None => {
+                let (bg, fg, subtle) = self.theme.colors();
+                (bg.into(), fg.into(), subtle.into())
+            }
+        };
         let px = self.font_px();
         let gutter = GUTTER_EM;
         let measure = MEASURE_EM + 2.0 * GUTTER_EM;
@@ -193,7 +244,7 @@ html td {{
 }}
 th {{ font-weight: 600; }}
 
-a {{ color: inherit; text-decoration-color: {subtle}; }}
+html a {{ color: inherit; text-decoration-color: {subtle}; }}
 html hr {{
   border: 0;
   border-top: 1px solid rgba(127, 127, 127, 0.3);
@@ -316,7 +367,25 @@ const OMARCHY_CSS: &str = ".local/state/omarchy/current/theme/omaread.css";
 pub fn omarchy_chrome() -> Option<Chrome> {
     let home = std::env::var_os("HOME")?;
     let path = std::path::Path::new(&home).join(OMARCHY_CSS);
-    parse_chrome(&std::fs::read_to_string(path).ok()?)
+    let (bg, fg, _, panel) = parse_chrome(&std::fs::read_to_string(path).ok()?)?;
+    // Not the rendered `--subtle`: that is a terminal's `muted`, which several
+    // themes put barely off the background (nord, hackerman) — illegible for a
+    // HUD label or a caption. Text faded toward the ground reads in all of them.
+    let subtle = mix(&fg, &bg, 0.6);
+    Some((bg, fg, subtle, panel))
+}
+
+/// `#rrggbb` as components. Only ever given strings `parse_chrome` accepted.
+fn hex_rgb(hex: &str) -> [u8; 3] {
+    let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0);
+    [(v >> 16) as u8, (v >> 8) as u8, v as u8]
+}
+
+/// `t` of the way from `b` to `a`, as `#rrggbb`.
+fn mix(a: &str, b: &str, t: f32) -> String {
+    let (a, b) = (hex_rgb(a), hex_rgb(b));
+    let c = |i: usize| (a[i] as f32 * t + b[i] as f32 * (1.0 - t)).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", c(0), c(1), c(2))
 }
 
 /// Pull `--bg`, `--fg`, `--subtle` and `--panel` out of a rendered stylesheet.
@@ -415,17 +484,39 @@ mod tests {
 
     #[test]
     fn font_scale_is_clamped() {
-        let s = ReadingStyle { theme: Theme::White, scale: 99.0 };
+        let s = ReadingStyle { theme: Theme::White, scale: 99.0, omarchy: None };
         assert_eq!(s.font_px(), 32.0);
-        let s = ReadingStyle { theme: Theme::White, scale: 0.01 };
+        let s = ReadingStyle { theme: Theme::White, scale: 0.01, omarchy: None };
         assert_eq!(s.font_px(), 16.0);
     }
 
     #[test]
     fn stylesheet_reflects_theme_and_scale() {
-        let s = ReadingStyle { theme: Theme::Night, scale: 1.2 };
+        let s = ReadingStyle { theme: Theme::Night, scale: 1.2, omarchy: None };
         let css = s.stylesheet();
         assert!(css.contains("#141416"), "night background missing");
         assert!(css.contains("font-size: 24px"), "scale not applied");
+        assert!(s.dark());
+    }
+
+    /// The page follows the Omarchy palette only when that theme is chosen,
+    /// and falls back to Sepia off Omarchy rather than painting nothing.
+    #[test]
+    fn omarchy_theme_paints_the_page_in_the_desktop_palette() {
+        let nord = ("#2e3440".into(), "#d8dee9".into(), "#4c566a".into(), "#434c5e".into());
+        let s = ReadingStyle { theme: Theme::Omarchy, scale: 1.0, omarchy: Some(nord) };
+        let css = s.stylesheet();
+        assert!(css.contains("background: #2e3440") && css.contains("color: #d8dee9"));
+        assert_eq!(s.background_rgb(), [0x2e, 0x34, 0x40]);
+        assert!(s.dark());
+
+        let paper = ReadingStyle { theme: Theme::Sepia, ..s };
+        assert!(!paper.stylesheet().contains("#2e3440"), "a paper theme took the desktop's");
+        assert_eq!(paper.chrome().0, "#2e3440", "chrome stops following Omarchy");
+
+        let off = ReadingStyle { theme: Theme::Omarchy, ..ReadingStyle::default() };
+        assert_eq!(off.background_rgb(), Theme::Sepia.background_rgb());
+        assert!(!off.dark());
+        assert_eq!(mix("#ffffff", "#000000", 0.5), "#808080");
     }
 }

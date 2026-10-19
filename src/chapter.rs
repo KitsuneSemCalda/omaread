@@ -405,7 +405,7 @@ pub fn page_counts(
     scale: f32,
     page_height: f32,
 ) -> Vec<usize> {
-    let dark = style.theme == crate::style::Theme::Night;
+    let dark = style.dark();
     let (tx, rx) = std::sync::mpsc::channel();
 
     (0..book.chapter_count())
@@ -1023,7 +1023,7 @@ mod tests {
             .map(|i| format!("<p>Párrafo número {i} con bastante texto para que la línea se rompa varias veces y la página cambie al variar el cuerpo.</p>"))
             .collect();
 
-        let small = ReadingStyle { theme: Theme::White, scale: 1.0 };
+        let small = ReadingStyle { theme: Theme::White, scale: 1.0, omarchy: None };
         let vp = viewport(760, 1000, 1.0, false);
         let doc = layout_fragment(&body, &small, vp);
         let pages_small = paginate_dom(&doc, 900.0);
@@ -1041,7 +1041,7 @@ mod tests {
             .map(|t| t.text.clone());
 
         // Reopen at a larger body size: different line breaking, different pages.
-        let big = ReadingStyle { theme: Theme::White, scale: 1.4 };
+        let big = ReadingStyle { theme: Theme::White, scale: 1.4, omarchy: None };
         let doc2 = layout_fragment(&body, &big, viewport(760, 1000, 1.0, false));
         let pages_big = paginate_dom(&doc2, 900.0);
         assert_ne!(
@@ -1065,7 +1065,7 @@ mod tests {
     }
 
     fn style() -> ReadingStyle {
-        ReadingStyle { theme: Theme::White, scale: 1.0 }
+        ReadingStyle { theme: Theme::White, scale: 1.0, omarchy: None }
     }
 
     /// The column must sit in the middle of the window, not against its left

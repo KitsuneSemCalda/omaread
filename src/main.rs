@@ -20,7 +20,7 @@ mod style;
 mod toc;
 
 use anyrender::WindowRenderer;
-use anyrender_vello::VelloWindowRenderer;
+use anyrender_vello_cpu::VelloCpuWindowRenderer as VelloWindowRenderer;
 use peniko::Color;
 use blitz_dom::net::Resource;
 use blitz_traits::net::{NetCallback, SharedCallback};
@@ -331,16 +331,6 @@ pub fn parse_hex(s: &str) -> Color {
 }
 
 fn main() {
-    // wgpu enumerates every backend at instance creation, and enumerating the
-    // GL one dlopens Mesa: libLLVM and libgallium, 108MB of resident memory for
-    // a path vello cannot use anyway (it needs compute shaders). Vulkan keeps
-    // both the hardware driver and lavapipe, the software fallback.
-    //
-    // Before any thread exists, and never over a choice the user has made.
-    if std::env::var_os("WGPU_BACKEND").is_none() {
-        unsafe { std::env::set_var("WGPU_BACKEND", "vulkan") };
-    }
-
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--check") {
         std::process::exit(check::run(&args[1..]));
@@ -394,17 +384,10 @@ fn main() {
     let mut app = App::new(args.first().cloned(), start);
     event_loop.run_app(&mut app).expect("run event loop");
 
-    // ponytail: leave without running destructors. Dropping the renderer tears
-    // down wgpu's GLES/EGL instance — a backend this app never renders with, it
-    // exists only because wgpu enumerates all of them — and NVIDIA's
-    // egl-wayland layer then marshals a Wayland request on a dead proxy and
-    // segfaults. Every clean exit dumped core; see `exiting` for the stack.
-    //
-    // Nothing here needs a destructor to be correct: reading position and marks
-    // are committed to SQLite before this point, and WAL means a process that
-    // simply stops loses nothing. The OS reclaims the GPU and the fonts.
-    //
-    // Remove this when wgpu or the driver can survive its own teardown.
+    // Leave without running destructors: quitting should not wait on freeing
+    // every document and glyph cache. Nothing here needs a destructor to be
+    // correct: reading position and marks are committed to SQLite before this
+    // point, and WAL means a process that simply stops loses nothing.
     app.save_position();
     std::process::exit(0);
 }
@@ -518,7 +501,7 @@ struct App {
     /// When to put the HUD away. Drives `ControlFlow::WaitUntil`.
     hud_until: Option<Instant>,
     /// `OMAREAD_EXIT_AFTER=<ms>` quits by itself. Shutdown is a real code path
-    /// with real bugs in it (see `exiting`), and it cannot be tested by hand or
+    /// with real bugs in it (CONTEXT.md §6), and it cannot be tested by hand or
     /// in CI without a way to reach it that needs no window manager.
     exit_at: Option<Instant>,
     /// Consecutive frames the compositor refused, and when to try the next one.
@@ -539,9 +522,6 @@ struct App {
     /// Patterns for the book's `dc:language`; None means no hyphenation.
     hyphenator: Option<hyphen::Hyphenator_>,
     style: ReadingStyle,
-    /// Palette Omarchy rendered for the app chrome. `None` elsewhere, and the
-    /// chrome then follows the reading theme (CONTEXT.md §11).
-    chrome: Option<Chrome>,
     chapter: Option<Chapter>,
     index: usize,
     page: usize,
@@ -565,6 +545,7 @@ impl App {
             .map_err(|e| eprintln!("omaread: no progress database ({e})"))
             .ok()
             .map(|d| Arc::new(Mutex::new(d)));
+        let omarchy = style::omarchy_chrome();
 
         let mut app = Self {
             view: View::Library,
@@ -620,15 +601,16 @@ impl App {
                 scale: style::setting("font-scale")
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(1.0),
-                theme: match style::setting("theme").as_deref() {
-                    Some("white") => Theme::White,
-                    Some("grey") => Theme::Grey,
-                    Some("night") => Theme::Night,
-                    Some("sepia") => Theme::Sepia,
-                    _ => ReadingStyle::default().theme,
-                },
+                // On Omarchy the reader matches the desktop until told otherwise.
+                theme: style::setting("theme")
+                    .as_deref()
+                    .and_then(Theme::named)
+                    .unwrap_or(match omarchy {
+                        Some(_) => Theme::Omarchy,
+                        None => ReadingStyle::default().theme,
+                    }),
+                omarchy,
             },
-            chrome: style::omarchy_chrome(),
             chapter: None,
             index: start,
             page: 0,
@@ -644,7 +626,7 @@ impl App {
 
         println!(
             "omaread: chrome — {}",
-            match &app.chrome {
+            match &app.style.omarchy {
                 Some((bg, ..)) => format!("Omarchy palette, ground {bg}"),
                 None => "built-in palette (no omaread.css from Omarchy)".into(),
             }
@@ -819,7 +801,8 @@ impl App {
             .unwrap_or(0..self.rows.len());
 
         let provider = self.db.clone().map(|db| {
-            Arc::new(net::CoverProvider::new(db, self.callback()))
+            let px = |css: u32| (css as f32 * self.scale).round() as u32;
+            Arc::new(net::CoverProvider::new(db, self.callback(), (px(grid::COVER_W), px(grid::COVER_H))))
                 as Arc<dyn blitz_traits::net::NetProvider<Resource>>
         });
         self.lib_doc = chapter::layout_document(
@@ -872,7 +855,7 @@ impl App {
             self.size.0,
             self.size.1,
             self.scale,
-            self.style.theme == Theme::Night,
+            self.style.dark(),
         );
         self.hud_doc = chapter::layout_document(html, ua, None, vp, self.page_height());
         self.hud_key = key;
@@ -1158,6 +1141,7 @@ impl App {
             library::folders().iter().map(|p| p.display().to_string()).collect();
         let html = grid::menu_html(
             &format!("{:?}", self.style.theme),
+            self.style.omarchy.is_some(),
             &folders,
             self.adding_folder.as_deref(),
         );
@@ -1165,7 +1149,7 @@ impl App {
             self.size.0,
             self.size.1,
             self.scale,
-            self.style.theme == Theme::Night,
+            self.style.dark(),
         );
         self.menu = chapter::layout_document(
             html,
@@ -1200,12 +1184,7 @@ impl App {
 
         match what.split_once(':') {
             Some(("theme", name)) => {
-                self.style.theme = match name {
-                    "white" => Theme::White,
-                    "grey" => Theme::Grey,
-                    "night" => Theme::Night,
-                    _ => Theme::Sepia,
-                };
+                self.style.theme = Theme::named(name).unwrap_or(Theme::Sepia);
                 style::set_setting("theme", name);
                 self.lib_doc = None;
                 self.hud_doc = None;
@@ -1350,7 +1329,7 @@ impl App {
             self.size.0,
             self.size.1,
             self.scale,
-            self.style.theme == Theme::Night,
+            self.style.dark(),
         );
         self.popup = chapter::layout_document(
             hud::note_html(text),
@@ -1682,13 +1661,8 @@ impl App {
         self.request_redraw();
     }
 
-    /// The app chrome palette: Omarchy's when it rendered one, the reading
-    /// theme's otherwise. Every chrome surface goes through here.
     fn chrome(&self) -> Chrome {
-        self.chrome.clone().unwrap_or_else(|| {
-            let (bg, fg, subtle, panel) = self.style.theme.chrome_colors();
-            (bg.into(), fg.into(), subtle.into(), panel.into())
-        })
+        self.style.chrome()
     }
 
     /// The document the current view paints. Every view is one.
@@ -1926,7 +1900,7 @@ impl App {
             self.column_width(),
             self.size.1,
             self.scale,
-            self.style.theme == Theme::Night,
+            self.style.dark(),
         )
     }
 
@@ -2245,7 +2219,7 @@ impl App {
         let margin = self.page_margin();
         let ground = match self.view {
             View::Reading => {
-                let [r, g, b] = self.style.theme.background_rgb();
+                let [r, g, b] = self.style.background_rgb();
                 Color::from_rgb8(r, g, b)
             }
             _ => parse_hex(&self.chrome().0),
@@ -2685,7 +2659,7 @@ impl App {
     fn rescan(&mut self) {
         // A theme switch rewrites the rendered palette, and F5 already means
         // "pick up what changed on disk".
-        self.chrome = style::omarchy_chrome();
+        self.style.omarchy = style::omarchy_chrome();
         let Some(db) = self.db.clone() else { return };
         if let Ok(d) = db.lock() {
             let (seen, added) = library::scan(&d);
@@ -2724,7 +2698,8 @@ impl App {
                         Theme::White => Theme::Sepia,
                         Theme::Sepia => Theme::Grey,
                         Theme::Grey => Theme::Night,
-                        Theme::Night => Theme::White,
+                        Theme::Night if self.style.omarchy.is_some() => Theme::Omarchy,
+                        Theme::Night | Theme::Omarchy => Theme::White,
                     };
                     println!("omaread: theme {:?}", self.style.theme);
                     style::set_setting("theme", &format!("{:?}", self.style.theme).to_lowercase());
@@ -3083,9 +3058,8 @@ impl ApplicationHandler for App {
             }
 
             // The guard is around the whole redraw, not only around painting
-            // the documents: acquiring the surface texture happens outside that
-            // inner one, and wgpu turns a compositor that does not hand a buffer
-            // back in time into `failed to get surface texture: Timeout`. A
+            // the documents: presenting happens outside that inner one, and
+            // softbuffer unwraps a compositor that will not take the buffer. A
             // frame nobody could present is a frame worth losing, not a window.
             WindowEvent::RedrawRequested => {
                 if catch_unwind(AssertUnwindSafe(|| self.redraw())).is_err() {
@@ -3103,50 +3077,49 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.drain_resources();
+        let now = Instant::now();
 
-        if let Some(at) = self.exit_at {
-            if Instant::now() >= at {
-                self.save_position();
-                event_loop.exit();
-                return;
-            }
-            event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+        if self.exit_at.is_some_and(|at| now >= at) {
+            self.save_position();
+            event_loop.exit();
             return;
         }
 
-        // Nothing else is worth drawing until a frame lands again.
-        if let Some(at) = self.retry_at {
-            if Instant::now() < at {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(at));
-                return;
+        // Every clock feeds one deadline, the soonest; with none the loop sleeps
+        // until an event. An early return per clock froze the others: under
+        // `OMAREAD_EXIT_AFTER` a page turn stopped on its first frame, a page
+        // nudged left, and a finished turn left a deadline in the past that
+        // spun the loop until the mouse moved.
+        let mut wake = vec![self.exit_at];
+        match self.retry_at {
+            // Nothing else is worth drawing until a frame lands again.
+            Some(at) if now < at => wake.push(Some(at)),
+            retry => {
+                if retry.is_some() {
+                    self.retry_at = None;
+                    self.request_redraw();
+                }
+                // A page turn animates, so it drives the clock while it lasts.
+                if let Some(s) = self.slide {
+                    match s.at.elapsed() >= SLIDE {
+                        true => self.slide = None,
+                        false => wake.push(Some(now + FRAME)),
+                    }
+                    self.request_redraw();
+                }
+                match self.hud_until {
+                    Some(at) if now >= at => {
+                        self.hud_until = None;
+                        self.hud_shown = false;
+                        self.request_redraw();
+                    }
+                    at => wake.push(at),
+                }
             }
-            self.retry_at = None;
-            self.request_redraw();
-            return;
         }
-
-        // A page turn animates, so it drives the clock while it lasts.
-        if let Some(s) = self.slide {
-            if s.at.elapsed() >= SLIDE {
-                self.slide = None;
-            }
-            self.request_redraw();
-            event_loop
-                .set_control_flow(ControlFlow::WaitUntil(Instant::now() + FRAME));
-            return;
-        }
-
-        // The HUD is the only thing here that happens without an event, so it is
-        // the only reason to ask the loop to wake on a clock.
-        match self.hud_until {
-            Some(at) if Instant::now() >= at => {
-                self.hud_until = None;
-                self.hud_shown = false;
-                event_loop.set_control_flow(ControlFlow::Wait);
-                self.request_redraw();
-            }
-            Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
-            None => {}
-        }
+        event_loop.set_control_flow(match wake.into_iter().flatten().min() {
+            Some(at) => ControlFlow::WaitUntil(at),
+            None => ControlFlow::Wait,
+        });
     }
 }

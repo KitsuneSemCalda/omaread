@@ -9,7 +9,8 @@
 use crate::book::Book;
 use crate::db::Db;
 use crate::grid::COVER_ORIGIN;
-use blitz_traits::net::{BoxedHandler, Bytes, NetProvider, Request, SharedCallback};
+use blitz_dom::net::Resource;
+use blitz_traits::net::{BoxedHandler, Bytes, NetCallback, NetProvider, Request, SharedCallback};
 use std::sync::{Arc, Mutex};
 
 /// Synthetic origin for in-archive resources. Chosen so that relative hrefs in a
@@ -61,19 +62,47 @@ impl<D: Send + Sync + 'static> NetProvider<D> for BookNetProvider<D> {
 /// well under it, so the check costs nothing after the first visit.
 const SHRINK_OVER: usize = 80 * 1024;
 
-pub struct CoverProvider<D> {
+pub struct CoverProvider {
     db: Arc<Mutex<Db>>,
-    callback: SharedCallback<D>,
+    callback: SharedCallback<Resource>,
 }
 
-impl<D> CoverProvider<D> {
-    pub fn new(db: Arc<Mutex<Db>>, callback: SharedCallback<D>) -> Self {
-        Self { db, callback }
+impl CoverProvider {
+    /// `card` is a cover's size in physical pixels: decoded covers are resized
+    /// to exactly that, see `FitCover`.
+    pub fn new(db: Arc<Mutex<Db>>, callback: SharedCallback<Resource>, card: (u32, u32)) -> Self {
+        Self { db, callback: Arc::new(FitCover { card, inner: callback }) }
     }
 }
 
-impl<D: Send + Sync + 'static> NetProvider<D> for CoverProvider<D> {
-    fn fetch(&self, doc_id: usize, request: Request, handler: BoxedHandler<D>) {
+/// Resizes each decoded cover to the card's pixel size before the document
+/// gets it. vello_cpu's bilinear sampler took ~10ms a cover, every frame, which
+/// made a library frame ~300ms; drawn 1:1 the grid can sample nearest
+/// (`image-rendering: pixelated`) at no cost and no loss. A quarter of the
+/// RGBA, too.
+struct FitCover {
+    card: (u32, u32),
+    inner: SharedCallback<Resource>,
+}
+
+impl NetCallback<Resource> for FitCover {
+    fn call(&self, doc_id: usize, result: Result<Resource, Option<String>>) {
+        let result = match result {
+            Ok(Resource::Image(node, kind, w, h, rgba)) => {
+                let (cw, ch) = self.card;
+                image::RgbaImage::from_raw(w, h, Arc::unwrap_or_clone(rgba))
+                    .map(|img| image::imageops::thumbnail(&img, cw, ch))
+                    .map(|img| Resource::Image(node, kind, cw, ch, Arc::new(img.into_raw())))
+                    .ok_or(None)
+            }
+            other => other,
+        };
+        self.inner.call(doc_id, result);
+    }
+}
+
+impl NetProvider<Resource> for CoverProvider {
+    fn fetch(&self, doc_id: usize, request: Request, handler: BoxedHandler<Resource>) {
         let url = request.url;
         if url.scheme() != "omaread-cover" {
             log_blocked(&url);
@@ -176,5 +205,34 @@ mod tests {
         assert_eq!(in_archive_path("/%2e%2e/%2e%2e/etc/passwd"), None);
         assert_eq!(in_archive_path("/"), None);
         assert_eq!(in_archive_path("/OEBPS/a\\b.png"), None);
+    }
+
+    /// A cover reaches the document at exactly the card's pixel size, which is
+    /// what makes nearest sampling in the grid exact; anything else passes.
+    #[test]
+    fn covers_arrive_at_card_size() {
+        use super::{FitCover, NetCallback, Resource};
+        use blitz_dom::util::ImageType;
+        use std::sync::{Arc, Mutex};
+
+        struct Keep(Mutex<Vec<Resource>>);
+        impl NetCallback<Resource> for Keep {
+            fn call(&self, _: usize, r: Result<Resource, Option<String>>) {
+                self.0.lock().unwrap().extend(r.ok());
+            }
+        }
+        let keep = Arc::new(Keep(Mutex::new(Vec::new())));
+        let fit = FitCover { card: (225, 348), inner: keep.clone() };
+
+        let rgba = Arc::new(vec![200u8; 450 * 696 * 4]);
+        fit.call(0, Ok(Resource::Image(7, ImageType::Image, 450, 696, rgba)));
+        fit.call(0, Ok(Resource::Font(Default::default())));
+
+        let got = keep.0.lock().unwrap();
+        match &got[0] {
+            Resource::Image(7, _, 225, 348, px) => assert_eq!(px.len(), 225 * 348 * 4),
+            _ => panic!("cover not fitted"),
+        }
+        assert!(matches!(got[1], Resource::Font(_)), "non-image passes through");
     }
 }

@@ -210,8 +210,8 @@ fn card(index: usize, b: &BookRow, with_cover: bool) -> String {
 ///
 /// Two settings is what there is. It is a document painted over the grid, like
 /// the HUD over a page — not a second window, and not a rebuild of the shelf.
-pub fn menu_html(theme: &str, folders: &[String], adding: Option<&str>) -> String {
-    let themes: String = ["White", "Sepia", "Grey", "Night"]
+pub fn menu_html(theme: &str, omarchy: bool, folders: &[String], adding: Option<&str>) -> String {
+    let themes: String = ["White", "Sepia", "Grey", "Night", "Omarchy"][..4 + omarchy as usize]
         .iter()
         .map(|t| {
             format!(
@@ -409,6 +409,8 @@ html .cover {{
   width: 100%;
   height: {COVER_H}px;
   border-radius: 5px;
+  /* Covers arrive at exactly this size (`net::FitCover`), so nearest is exact. */
+  image-rendering: pixelated;
 }}
 html .cover.blank {{ background: {panel}; }}
 
@@ -647,7 +649,7 @@ mod tests {
     #[test]
     fn the_settings_panel_marks_what_is_set_and_escapes_paths() {
         let dirs = vec!["/home/x/Documents".to_string(), "/tmp/<b>".to_string()];
-        let out = menu_html("Night", &dirs, None);
+        let out = menu_html("Night", true, &dirs, None);
 
         assert!(out.contains(r#"data-set="theme:night""#), "{out}");
         assert!(out.contains(r#"class="row on" data-set="theme:night""#), "the one in use");
@@ -657,7 +659,7 @@ mod tests {
         assert!(out.contains(r#"data-set="add""#), "somewhere to add one");
 
         // While a path is being typed the add row becomes the field.
-        let typing = menu_html("Sepia", &dirs, Some("~/Books"));
+        let typing = menu_html("Sepia", false, &dirs, Some("~/Books"));
         assert!(typing.contains("~/Books"), "{typing}");
         assert!(typing.contains("caret"));
         assert!(!typing.contains(r#"data-set="add""#), "no button while typing into it");
