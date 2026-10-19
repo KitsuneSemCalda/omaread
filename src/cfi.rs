@@ -98,6 +98,50 @@ pub fn of_node(dom: &BaseDocument, node_id: usize, spine: usize) -> Option<Cfi> 
     Some(Cfi { spine, steps, offset: None })
 }
 
+/// A CFI for a point in a laid-out document: a text element and the visible
+/// character in it.
+///
+/// An anonymous block (`chapter::kids`) is not in the document, so a CFI cannot
+/// name one. It names the element blitz split instead, and the offset runs on
+/// through that element's anonymous blocks in order. `locate` undoes this.
+pub fn at(dom: &BaseDocument, node: usize, offset: Option<usize>, spine: usize) -> Option<Cfi> {
+    use crate::chapter::{anonymous_blocks, text_layout, visible_count};
+    let mut node = node;
+    let mut offset = offset;
+    if matches!(dom.get_node(node)?.data, NodeData::AnonymousBlock(_)) {
+        let owner = dom.get_node(node)?.parent?;
+        let before: usize = anonymous_blocks(dom, owner)
+            .into_iter()
+            .take_while(|&b| b != node)
+            .filter_map(|b| text_layout(dom, b))
+            .map(|tl| visible_count(&tl.text))
+            .sum();
+        (node, offset) = (owner, offset.map(|o| o + before));
+    }
+    let mut c = of_node(dom, node, spine)?;
+    c.offset = offset;
+    Some(c)
+}
+
+/// Where a CFI points in a laid-out document: the text element, and the
+/// visible character in it. The inverse of `at`.
+pub fn locate(dom: &BaseDocument, cfi: &Cfi) -> Option<(usize, Option<usize>)> {
+    use crate::chapter::{anonymous_blocks, text_layout, visible_count};
+    let node = resolve(dom, cfi)?;
+    let blocks = anonymous_blocks(dom, node);
+    let Some(mut off) = cfi.offset.filter(|_| !blocks.is_empty()) else {
+        return Some((node, cfi.offset));
+    };
+    for (i, &b) in blocks.iter().enumerate() {
+        let n = text_layout(dom, b).map_or(0, |tl| visible_count(&tl.text));
+        if off < n || i + 1 == blocks.len() {
+            return Some((b, Some(off)));
+        }
+        off -= n;
+    }
+    None
+}
+
 /// Walk a CFI's steps back to a node id.
 pub fn resolve(dom: &BaseDocument, cfi: &Cfi) -> Option<usize> {
     let mut id = dom.root_node().id;

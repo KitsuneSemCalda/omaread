@@ -131,7 +131,8 @@ pub fn collect_atoms(dom: &BaseDocument) -> Vec<Atom> {
         let mut table = table;
         let mut thead = thead;
 
-        if let blitz_dom::NodeData::Element(el) = &node.data {
+        // An anonymous block is a `div` to this match, and holds lines.
+        if let Some(el) = node.element_data() {
             let tag = el.name.local.as_ref();
 
             match tag {
@@ -196,7 +197,7 @@ pub fn collect_atoms(dom: &BaseDocument) -> Vec<Atom> {
             }
         }
 
-        for child in &node.children {
+        for child in kids(dom, node).iter() {
             walk(dom, *child, abs_y, table, thead, atoms, cells, in_table);
         }
     }
@@ -328,7 +329,16 @@ pub fn load(
     }
 
     let base_url = base_url_for(&href);
-    let ua = style.stylesheet();
+    let mut ua = style.stylesheet();
+    // Images the publisher sized to the text stay in the line (style.rs).
+    let dir = href.rsplit_once('/').map_or("", |(d, _)| d);
+    for css in style::linked_stylesheets(&raw) {
+        if let Some(text) = crate::net::in_archive_path(&format!("{dir}/{css}"))
+            .and_then(|path| book.read_bytes(&path).ok())
+        {
+            ua += &style::inline_image_rules(&String::from_utf8_lossy(&text));
+        }
+    }
     let provider: Arc<dyn NetProvider<Resource>> =
         Arc::new(BookNetProvider::new(book.clone(), net_callback));
 
@@ -462,8 +472,8 @@ pub fn load_offscreen(
 /// Where a stored position starts in its chapter: the character it names when
 /// it names one, the element's top otherwise.
 pub fn top_of_cfi(ch: &Chapter, c: &crate::cfi::Cfi) -> Option<f32> {
-    let node = crate::cfi::resolve(ch.dom(), c)?;
-    c.offset
+    let (node, offset) = crate::cfi::locate(ch.dom(), c)?;
+    offset
         .and_then(|off| highlight_rects(ch.dom(), node, off, 1).first().map(|r| r.1))
         .or_else(|| node_top(ch.dom(), node))
 }
@@ -597,9 +607,9 @@ pub fn node_top(dom: &BaseDocument, target: usize) -> Option<f32> {
         if id == target {
             return Some(at);
         }
-        node.children.iter().find_map(|c| walk(dom, *c, at, target))
+        kids(dom, node).iter().find_map(|c| walk(dom, *c, at, target))
     }
-    let block = dom.get_node(target)?.parent.and_then(|p| text_element(dom, p));
+    let block = layout_parent(dom, target).and_then(|p| text_element(dom, p));
     match block.and_then(|b| inline_top(dom, b, target)) {
         Some(y) => Some(y),
         None => walk(dom, 0, 0.0, target),
@@ -643,7 +653,7 @@ pub fn indexed_tops(dom: &BaseDocument) -> Vec<(usize, f32)> {
                 }
             }
         }
-        for c in &node.children {
+        for c in kids(dom, node).iter() {
             walk(dom, *c, at, out);
         }
     }
@@ -670,7 +680,7 @@ pub fn node_origin(dom: &BaseDocument, target: usize) -> Option<(f32, f32)> {
                 here.1 + l.border.top + l.padding.top,
             ));
         }
-        node.children.iter().find_map(|c| walk(dom, *c, here, target))
+        kids(dom, node).iter().find_map(|c| walk(dom, *c, here, target))
     }
     walk(dom, 0, (0.0, 0.0), target)
 }
@@ -693,7 +703,7 @@ pub fn node_rect(dom: &BaseDocument, target: usize) -> Option<(f32, f32, f32, f3
         if id == target {
             return Some((here.0, here.1, l.size.width, l.size.height));
         }
-        node.children.iter().find_map(|c| walk(dom, *c, here, target))
+        kids(dom, node).iter().find_map(|c| walk(dom, *c, here, target))
     }
     walk(dom, 0, (0.0, 0.0), target)
 }
@@ -705,13 +715,10 @@ pub fn node_rect(dom: &BaseDocument, target: usize) -> Option<(f32, f32, f32, f3
 /// text node or an inline `<em>` inside it.
 pub fn text_element(dom: &BaseDocument, mut id: usize) -> Option<usize> {
     loop {
-        let node = dom.get_node(id)?;
-        if let NodeData::Element(el) = &node.data {
-            if el.inline_layout_data.is_some() {
-                return Some(id);
-            }
+        if text_layout(dom, id).is_some() {
+            return Some(id);
         }
-        id = node.parent?;
+        id = layout_parent(dom, id)?;
     }
 }
 
@@ -720,11 +727,7 @@ pub fn text_element(dom: &BaseDocument, mut id: usize) -> Option<usize> {
 /// CSS pixels and multiply to go back. At scale 1 the two agree, which is how
 /// mixing them went unseen until Omarchy ran at 1.25x.
 pub fn text_layout(dom: &BaseDocument, id: usize) -> Option<&blitz_dom::node::TextLayout> {
-    let node = dom.get_node(id)?;
-    match &node.data {
-        NodeData::Element(el) => el.inline_layout_data.as_deref(),
-        _ => None,
-    }
+    dom.get_node(id)?.element_data()?.inline_layout_data.as_deref()
 }
 
 /// An element's tag, lowercase.
@@ -768,7 +771,7 @@ pub fn page_text(dom: &BaseDocument, from: f32, to: f32) -> Vec<(u8, String)> {
         let Some(node) = dom.get_node(id) else { return };
         let l = &node.final_layout;
         let abs_y = parent_y + l.location.y;
-        if let NodeData::Element(el) = &node.data {
+        if let Some(el) = node.element_data() {
             if let Some(tl) = el.inline_layout_data.as_ref() {
                 let content_top = abs_y + l.border.top + l.padding.top;
                 let s = tl.layout.scale();
@@ -798,7 +801,7 @@ pub fn page_text(dom: &BaseDocument, from: f32, to: f32) -> Vec<(u8, String)> {
                 }
             }
         }
-        for c in &node.children {
+        for c in kids(dom, node).iter() {
             walk(dom, *c, abs_y, span, out);
         }
     }
@@ -872,6 +875,46 @@ pub fn range_rects(dom: &BaseDocument, id: usize, bytes: std::ops::Range<usize>)
         parley::Cursor::from_byte_index(&tl.layout, bytes.end, parley::Affinity::Upstream),
     );
     selection_rects(dom, id, &sel)
+}
+
+/// The children a walk over the laid-out page visits.
+///
+/// Text beside a block — `<li>words<ul>…</ul></li>`, a `<p>` holding a block
+/// image — is wrapped by blitz in an anonymous block that exists only in the
+/// layout tree. That block, not the `<li>`, holds the words' parley layout, and
+/// their positions are measured from it. Where a node has such blocks this is
+/// its layout children, each anonymous block standing in for the DOM children
+/// it wraps. Everywhere else it is the DOM children: a paragraph's layout
+/// children are only the boxes embedded in its text.
+///
+/// Lookups by id, attribute or text want the DOM and keep `children`.
+pub fn kids<'a>(dom: &BaseDocument, node: &'a blitz_dom::Node) -> std::borrow::Cow<'a, [usize]> {
+    match node.layout_children.borrow().as_ref() {
+        Some(lc) if lc.iter().any(|&c| is_anonymous(dom, c)) => lc.clone().into(),
+        _ => node.children.as_slice().into(),
+    }
+}
+
+fn is_anonymous(dom: &BaseDocument, id: usize) -> bool {
+    dom.get_node(id).is_some_and(|n| matches!(n.data, NodeData::AnonymousBlock(_)))
+}
+
+/// An element's anonymous blocks, in order (see `kids`). Empty for most.
+pub fn anonymous_blocks(dom: &BaseDocument, id: usize) -> Vec<usize> {
+    let Some(node) = dom.get_node(id) else { return Vec::new() };
+    let lc = node.layout_children.borrow();
+    lc.iter().flatten().copied().filter(|&c| is_anonymous(dom, c)).collect()
+}
+
+/// A node's parent as layout sees it: the anonymous block wrapping it, if
+/// blitz made one, its DOM parent otherwise. blitz records neither on the
+/// wrapped node — its `parent` is still the element that was split.
+fn layout_parent(dom: &BaseDocument, id: usize) -> Option<usize> {
+    let parent = dom.get_node(id)?.parent?;
+    let wrapper = anonymous_blocks(dom, parent)
+        .into_iter()
+        .find(|&a| dom.get_node(a).is_some_and(|n| n.children.contains(&id)));
+    Some(wrapper.unwrap_or(parent))
 }
 
 /// Every element that owns an inline layout, in reading order: the paragraphs a
@@ -1009,7 +1052,7 @@ pub fn element_rect(dom: &BaseDocument, tag: &str) -> Option<(f32, f32, f32, f32
                 return Some((at.0, at.1, l.size.width, l.size.height));
             }
         }
-        node.children.iter().find_map(|c| walk(dom, *c, at, tag))
+        kids(dom, node).iter().find_map(|c| walk(dom, *c, at, tag))
     }
     walk(dom, 0, (0.0, 0.0), tag)
 }
@@ -1056,10 +1099,10 @@ fn walk_elements(
     f: &mut impl FnMut(usize, &blitz_dom::ElementData),
 ) {
     let Some(node) = dom.get_node(id) else { return };
-    if let blitz_dom::NodeData::Element(el) = &node.data {
+    if let Some(el) = node.element_data() {
         f(id, el);
     }
-    for child in &node.children {
+    for child in kids(dom, node).iter() {
         walk_elements(dom, *child, f);
     }
 }
@@ -1069,7 +1112,7 @@ fn content_height(dom: &BaseDocument) -> f32 {
         let Some(node) = dom.get_node(id) else { return };
         let abs_y = parent_y + node.final_layout.location.y;
         *max_y = max_y.max(abs_y + node.final_layout.size.height);
-        for child in &node.children {
+        for child in kids(dom, node).iter() {
             walk(dom, *child, abs_y, max_y);
         }
     }
@@ -1080,6 +1123,36 @@ fn content_height(dom: &BaseDocument) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// Text beside a nested list sits in anonymous blocks only the layout tree
+    /// has (`kids`). Unseen, its lines were no atoms — a break could cut one —
+    /// its hyphens were not drawn, and it could not be selected or bookmarked.
+    #[test]
+    fn text_beside_a_block_is_seen_and_anchored() {
+        let st = crate::style::ReadingStyle::default();
+        let doc = super::layout_fragment(
+            "<ul><li>Alpha beta gamma<ul><li>inner</li></ul>delta epsilon</li></ul>",
+            &st,
+            super::viewport(760, 1000, 1.0, false),
+        );
+        let lines = super::collect_atoms(&doc).iter().filter(|a| a.kind == super::AtomKind::Line).count();
+        assert_eq!(lines, 3, "both runs of the outer item and the inner one");
+
+        let li = (0..10_000).find(|&i| super::tag_of(&doc, i).as_deref() == Some("li")).unwrap();
+        let blocks = super::anonymous_blocks(&doc, li);
+        assert_eq!(blocks.len(), 2, "before and after the nested list");
+        let els = super::text_elements(&doc);
+        assert!(blocks.iter().all(|b| els.contains(b)), "selectable: {els:?} {blocks:?}");
+        let words = super::node_containing_text(&doc, "delta").unwrap();
+        assert_eq!(super::text_element(&doc, words), Some(blocks[1]), "a hit climbs to its block");
+
+        // A CFI names the <li>, with the offset run on through the first block.
+        let c = crate::cfi::at(&doc, blocks[1], Some(2), 3).expect("a cfi for anonymous text");
+        assert_eq!(crate::cfi::resolve(&doc, &c), Some(li));
+        assert_eq!(c.offset, Some("Alpha beta gamma".len() + 2));
+        assert_eq!(crate::cfi::locate(&doc, &c), Some((blocks[1], Some(2))));
+        assert!(super::node_top(&doc, blocks[1]).unwrap() > super::node_top(&doc, blocks[0]).unwrap());
+    }
+
     /// Save and restore have to agree about *which page*, not which paragraph.
     /// A paragraph three pages long used to resume at its first page, because
     /// the CFI named the element and nothing else.

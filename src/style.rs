@@ -298,6 +298,68 @@ pub fn strip_publisher_css(html: &str) -> String {
     drop_link_elements(&without_style)
 }
 
+/// The hrefs of the stylesheets a chapter links.
+pub fn linked_stylesheets(html: &str) -> Vec<&str> {
+    html.match_indices("<link")
+        .filter_map(|(i, _)| {
+            let tag = &html[i..i + html[i..].find('>')?];
+            if !tag.contains("stylesheet") {
+                return None;
+            }
+            let (_, rest) = tag.split_once("href=")?;
+            let quote = rest.chars().next().filter(|q| *q == '"' || *q == '\'')?;
+            rest[1..].split(quote).next()
+        })
+        .collect()
+}
+
+/// The one piece of the publisher's sizing that is honoured: an image sized
+/// in `em` or `ex` by its class (`img.height_1em { height: 1em }`). Sized to
+/// the text, it is part of the line — an icon before a reply, a glyph drawn as
+/// a picture — and the base stylesheet would otherwise set it on a line of its
+/// own at its natural size, with the dark page's backdrop. Every other
+/// declaration stays stripped (CONTEXT.md §3).
+///
+/// Only a bare `img.class` selector counts, and only a number with an em-type
+/// unit is copied, so nothing of the book's text reaches our sheet unchecked.
+pub fn inline_image_rules(css: &str) -> String {
+    let css = drop_spans(css, "/*", "*/");
+    let mut out = String::new();
+    for rule in css.split('}') {
+        let Some((selectors, body)) = rule.split_once('{') else { continue };
+        let sizes: Vec<String> = body
+            .split(';')
+            .filter_map(|d| {
+                let (prop, value) = d.split_once(':')?;
+                let (prop, value) = (prop.trim().to_ascii_lowercase(), value.trim());
+                let number = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+                let unit = &value[number.len()..];
+                ((prop == "height" || prop == "width")
+                    && matches!(unit, "em" | "rem" | "ex")
+                    && number.parse::<f32>().is_ok_and(|n| n > 0.0))
+                .then(|| format!("{prop}: {number}{unit};"))
+            })
+            .collect();
+        if sizes.is_empty() {
+            continue;
+        }
+        for selector in selectors.split(',') {
+            let Some(class) = selector.trim().strip_prefix("img.") else { continue };
+            if class.is_empty()
+                || !class.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                continue;
+            }
+            out += &format!(
+                "html img.{class} {{ display: inline; margin: 0; padding: 0; background: none; \
+                 max-height: none; vertical-align: middle; {} }}\n",
+                sizes.concat()
+            );
+        }
+    }
+    out
+}
+
 fn drop_link_elements(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
@@ -542,6 +604,27 @@ fn parse_chrome(css: &str) -> Option<Chrome> {
 
 #[cfg(test)]
 mod tests {
+    /// Co-Intelligence sets a 105px avatar at `height: 1em` before each of
+    /// ChatGPT's replies; stripped, it sat on a line of its own, full size.
+    #[test]
+    fn an_image_sized_to_the_text_stays_in_the_line() {
+        let css = "/* x */ img.height_1em {\n\theight: 1em;\n\tvertical-align: middle;\n}\n\
+                   div.height_100 { height: 100%; }\n\
+                   img.big { width: 300px; }\n\
+                   p img.nested, img.a, img.b:hover { height: 2em }\n\
+                   img.evil { height: 1em}</style><script>{ }";
+        let rules = super::inline_image_rules(css);
+        assert!(rules.contains("html img.height_1em { display: inline;"), "{rules}");
+        assert!(rules.contains("height: 1em;"), "{rules}");
+        assert!(rules.contains("html img.a {"), "{rules}");
+        assert!(!rules.contains("height_100") && !rules.contains("img.big"), "not sized to text: {rules}");
+        assert!(!rules.contains("nested") && !rules.contains("hover"), "only bare img.class: {rules}");
+        assert!(!rules.contains("<"), "nothing of the book gets through unchecked: {rules}");
+
+        let html = r#"<link href="../css/a.css" rel="stylesheet" type="text/css"/><link rel="icon" href="x.png"/><link rel='stylesheet' href='b.css'>"#;
+        assert_eq!(super::linked_stylesheets(html), ["../css/a.css", "b.css"]);
+    }
+
     /// What `omarchy theme set` does once the templates are rendered: a whole
     /// `next-theme` renamed to `theme` over the old one. The rename is the
     /// signal, and it has to arrive.

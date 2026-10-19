@@ -224,10 +224,8 @@ pub fn soft_hyphens(scene: &mut impl PaintScene, doc: &blitz_dom::BaseDocument, 
         let Some(node) = dom.get_node(id) else { return };
         let l = &node.final_layout;
         let here = (at.0 + l.location.x as f64, at.1 + l.location.y as f64);
-        let tl = match &node.data {
-            blitz_dom::NodeData::Element(el) => el.inline_layout_data.as_deref(),
-            _ => None,
-        };
+        // Anonymous blocks too: the text beside a nested list is in one.
+        let tl = node.element_data().and_then(|el| el.inline_layout_data.as_deref());
         let on_screen = here.1 * scale < height && (here.1 + l.size.height as f64) * scale > 0.0;
         if let Some(tl) = tl.filter(|tl| on_screen && tl.text.contains('\u{AD}')) {
             // The layout's origin is the content box, as in `blitz_paint`.
@@ -280,7 +278,7 @@ pub fn soft_hyphens(scene: &mut impl PaintScene, doc: &blitz_dom::BaseDocument, 
                 );
             }
         }
-        for c in &node.children {
+        for c in crate::chapter::kids(dom, node).iter() {
             walk(scene, dom, *c, here, scale, height);
         }
     }

@@ -92,6 +92,7 @@ settings-drop-folder = Stop scanning { $folder }
 
 ## Notices
 
+nothing-selected = Nothing is selected. Drag across some text first, then try again.
 columns-too-narrow = The window is too narrow for two columns. Widen it, or make the text smaller, and the second column appears.
 fixed-layout-notice = This book is laid out page by page, like a comic or a picture book. Omaread reflows it into its own pages, so it will not look as it was designed.
 a11y-figure = Figure

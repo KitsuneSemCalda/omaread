@@ -90,6 +90,12 @@ publisher declarations is honored:
 `font-style`, `font-weight`, `text-align`, margins, `text-indent`, image sizing,
 `<pre>` treatment.
 
+So far only one piece of that is built: an image whose class sizes it in
+`em`/`ex` (`img.height_1em { height: 1em }`) is set inline at that size
+(`style::inline_image_rules`, read from the stylesheets the chapter links).
+That is the publisher saying the image belongs in the line: Co-Intelligence's
+avatar before each ChatGPT reply sat on a line of its own at 105px without it.
+
 Everything else is rejected. A "publisher styles" toggle is post-1.0.
 
 This is what makes a pure-Rust engine tractable: the overwhelming majority of a
@@ -1070,6 +1076,26 @@ The fix is two steps, and both are needed:
 Both steps are pure functions with unit tests (`absorb_into_bands`,
 `separate_bands`). This is the second time floating adjacency inside a table has
 cost a hard cut, and the second time the sweep found it rather than the eye.
+
+**Text beside a block lives in an anonymous block the DOM does not have.**
+`<li>words<ul>…</ul></li>`, or a `<p>` holding a block image: blitz wraps the
+loose text in a `NodeData::AnonymousBlock`. It hangs off the `<li>`'s
+`layout_children` only. Its `children` are the wrapped nodes, whose `parent` is
+still the `<li>`. The parley layout, and the origin positions are measured
+from, are on that block. Every walk followed `children` and matched only
+`NodeData::Element`, so that text was invisible. Its lines were not atoms, and
+`--check`, walking the same way, could not see a break cut one. Its soft hyphens
+were not drawn (Co-Intelligence's "sim ulation"). It could not be selected or
+highlighted, and a page starting in it saved no position.
+
+`chapter::kids` is the walk's child list: the layout children where a node has
+anonymous blocks, the DOM children everywhere else. A paragraph's layout
+children are only the boxes embedded in its text, so it cannot be used
+throughout. `layout_parent` climbs to the wrapping block. Lookups by id,
+attribute or text keep the DOM. A CFI cannot name an anonymous block, so
+`cfi::at` names the split element with the offset run on through its blocks,
+and `cfi::locate` undoes it. The sweep over `~/Documents` is unchanged
+(0 cuts, 0 stalls).
 
 **rbook's href space is absolute and slash-prefixed.** `manifest_entry().href()`
 yields `/OEBPS/ch04.html`. `read_resource_*` accepts either that form or a path

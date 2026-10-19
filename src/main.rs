@@ -1235,9 +1235,7 @@ impl App {
         let ch = self.chapter.as_ref()?;
         let top = ch.pages.top_of(self.page);
         let node = chapter::node_at(ch.dom(), top)?;
-        let mut c = cfi::of_node(ch.dom(), node, self.index)?;
-        c.offset = chapter::char_at(ch.dom(), node, top);
-        Some(c)
+        cfi::at(ch.dom(), node, chapter::char_at(ch.dom(), node, top), self.index)
     }
 
     /// Whether the page on screen carries a bookmark. One indexed lookup, so
@@ -1294,12 +1292,11 @@ impl App {
     /// Returns the new mark's `(cfi, length)`, which is what identifies it.
     fn highlight_selection(&mut self) -> Option<(String, usize)> {
         let Some((node, start, len, text)) = self.selected_span() else {
-            println!("omaread: nothing selected — drag across the text first");
+            self.open_note(&i18n::tr!("nothing-selected"));
             return None;
         };
         let ch = self.chapter.as_ref()?;
-        let mut cfi = cfi::of_node(ch.dom(), node, self.index)?;
-        cfi.offset = Some(start);
+        let cfi = cfi::at(ch.dom(), node, Some(start), self.index)?;
 
         let mark = db::Mark {
             cfi: cfi.to_string(),
@@ -1339,7 +1336,7 @@ impl App {
 
     fn copy_selection(&mut self) {
         let Some(text) = self.selected_text() else {
-            println!("omaread: nothing selected");
+            self.open_note(&i18n::tr!("nothing-selected"));
             return;
         };
         // ponytail: wl-copy rather than a clipboard crate. Wayland is the
@@ -1426,8 +1423,8 @@ impl App {
         let (mut all, mut noted) = (Vec::new(), Vec::new());
         for m in db.marks_in(&self.hash, self.index) {
             let Some(c) = cfi::Cfi::parse(&m.cfi) else { continue };
-            let Some(node) = cfi::resolve(ch.dom(), &c) else { continue };
-            let rects = chapter::highlight_rects(ch.dom(), node, c.offset.unwrap_or(0), m.length);
+            let Some((node, offset)) = cfi::locate(ch.dom(), &c) else { continue };
+            let rects = chapter::highlight_rects(ch.dom(), node, offset.unwrap_or(0), m.length);
             if !m.note.is_empty() {
                 noted.extend(rects.iter().map(|&(x0, _, x1, y1)| (x0, y1 - 2.0, x1, y1)));
             }
@@ -2378,8 +2375,8 @@ impl App {
         let db = self.db.as_ref()?.lock().ok()?;
         db.marks_in(&self.hash, self.index).into_iter().find_map(|m| {
             let c = cfi::Cfi::parse(&m.cfi)?;
-            let node = cfi::resolve(ch.dom(), &c)?;
-            let rects = chapter::highlight_rects(ch.dom(), node, c.offset?, m.length);
+            let (node, offset) = cfi::locate(ch.dom(), &c)?;
+            let rects = chapter::highlight_rects(ch.dom(), node, offset?, m.length);
             let inside = rects.iter().any(|&(x0, y0, x1, y1)| {
                 flow.0 >= x0 && flow.0 <= x1 && flow.1 >= y0 && flow.1 <= y1
             });
@@ -3064,14 +3061,11 @@ impl App {
 
     /// Anchor the current page to a CFI and store it.
     fn save_position(&self) {
-        let (Some(db), Some(ch)) = (&self.db, &self.chapter) else { return };
+        let Some(db) = &self.db else { return };
         let Ok(db) = db.lock() else { return };
-        let top = ch.pages.top_of(self.page);
-        let Some(node) = chapter::node_at(ch.dom(), top) else { return };
-        let Some(mut c) = cfi::of_node(ch.dom(), node, self.index) else { return };
-        // Which character of it the page starts on. Without this the address is
+        // With the character the page starts on: without it the address is
         // the paragraph, and a paragraph three pages long resumes at its first.
-        c.offset = chapter::char_at(ch.dom(), node, top);
+        let Some(c) = self.cfi_of_page() else { return };
         let title = self.book.as_ref().map(|b| b.title.as_str()).unwrap_or("");
         let progress = self.progress();
         if let Err(e) =

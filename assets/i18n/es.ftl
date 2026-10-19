@@ -95,6 +95,7 @@ settings-drop-folder = Dejar de buscar en { $folder }
 
 ## Avisos
 
+nothing-selected = No hay nada seleccionado. Arrastra sobre el texto primero y vuelve a intentarlo.
 columns-too-narrow = La ventana es demasiado estrecha para dos columnas. Ensánchala o reduce el texto y aparecerá la segunda.
 fixed-layout-notice = Este libro está maquetado página a página, como un cómic o un álbum ilustrado. Omaread lo recompone en sus propias páginas, así que no se verá como fue diseñado.
 a11y-figure = Figura
