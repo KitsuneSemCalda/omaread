@@ -143,6 +143,14 @@ impl ReadingStyle {
         let px = self.font_px();
         let gutter = GUTTER_EM;
         let measure = MEASURE_EM + 2.0 * GUTTER_EM;
+        // On Omarchy, code is set in the desktop's monospace font. Omarchy keeps
+        // it as fontconfig's `monospace` alias (`omarchy-font-set`), which is
+        // what fontique resolves the generic family through. Elsewhere, the
+        // bundled face.
+        let mono = match self.omarchy {
+            Some(_) => "monospace",
+            None => r#""IBM Plex Mono", monospace"#,
+        };
 
         format!(
             r#"
@@ -195,7 +203,7 @@ blockquote {{ margin: 1em 2em; font-size: 0.95em; }}
 blockquote p {{ text-indent: 0; }}
 
 /* No sideways in a paginated reader: code wraps, never scrolls. */
-pre, code, kbd, samp {{ font-family: "IBM Plex Mono", monospace; }}
+html pre, html code, html kbd, html samp {{ font-family: {mono}; }}
 html pre {{
   white-space: pre-wrap;
   overflow-wrap: break-word;
@@ -496,6 +504,7 @@ mod tests {
         let css = s.stylesheet();
         assert!(css.contains("#141416"), "night background missing");
         assert!(css.contains("font-size: 24px"), "scale not applied");
+        assert!(css.contains(r#"font-family: "IBM Plex Mono""#), "bundled mono off Omarchy");
         assert!(s.dark());
     }
 
@@ -513,6 +522,7 @@ mod tests {
         let paper = ReadingStyle { theme: Theme::Sepia, ..s };
         assert!(!paper.stylesheet().contains("#2e3440"), "a paper theme took the desktop's");
         assert_eq!(paper.chrome().0, "#2e3440", "chrome stops following Omarchy");
+        assert!(paper.stylesheet().contains("font-family: monospace;"), "desktop mono in any theme");
 
         let off = ReadingStyle { theme: Theme::Omarchy, ..ReadingStyle::default() };
         assert_eq!(off.background_rgb(), Theme::Sepia.background_rgb());

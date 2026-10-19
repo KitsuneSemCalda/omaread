@@ -74,7 +74,7 @@ Shipped, in `assets/fonts/`, all from `google/fonts`, each with its `OFL.txt`
 |---|---|---|
 | Literata | variable, upright + italic | the reading face |
 | Charis SIL | static regular + italic | coverage Literata lacks |
-| IBM Plex Mono | static regular, bold, italic | `pre` / `code` |
+| IBM Plex Mono | static regular, bold, italic | `pre` / `code` off Omarchy |
 
 Literata is a **variable** font and that is the point: `fontique` reads its
 `wght` axis and sets the weight from CSS, so one file per slant covers every
@@ -87,6 +87,12 @@ The faces are registered per document through `Resource::Font`, not through
 its own list-bullet font, and that font is `pub(crate)` — a shared context costs
 `<li>` markers. Share one, and vendor a bullet font, only if this shows up in a
 profile.
+
+On Omarchy, code is set in the desktop's monospace font instead: the base
+stylesheet asks for the generic `monospace`, which fontique resolves through
+fontconfig, and fontconfig's `monospace` alias is what `omarchy-font-set` writes.
+The rule needs the `html` prefix like every other (see Base stylesheet): without
+it blitz's UA `monospace` won, and Plex was never used anywhere.
 
 The system's fonts stay available as a last resort for glyphs none of the three
 carry. "Bundled only" is about ignoring the *book's* fonts, not about rendering
