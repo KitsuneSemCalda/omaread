@@ -312,7 +312,7 @@ pub fn load(
     let href = book.chapter_href(index).unwrap_or_default().to_owned();
 
     // The whitelist policy: publisher CSS never reaches the engine.
-    let mut html = hoist_edge_spaces(&style::strip_publisher_css(&raw));
+    let mut html = raise_superscripts(&hoist_edge_spaces(&style::strip_publisher_css(&raw)));
 
     // Justified text without hyphenation opens rivers, badly so in Spanish and
     // Catalan. Parley breaks on U+00AD, so mark the words before parsing.
@@ -582,6 +582,70 @@ pub fn hoist_edge_spaces(html: &str) -> String {
             Tok::Open(s) | Tok::Other(s) => s,
         })
         .collect()
+}
+
+/// Set a `<sup>` that is only a number in the font's superior digits:
+/// `<sup>8</sup>` becomes `<sup data-raised>⁸</sup>`.
+///
+/// ponytail: blitz-dom 0.2 never reads `vertical-align` and parley 0.6 has no
+/// baseline shift, so the style sheet can shrink a note reference but not lift
+/// it. Literata carries the superiors, one character for one, so a CFI offset
+/// and a highlight length mean what they meant. A `<sup>` holding anything
+/// else (`er`, `*`, `1,2`) is left to the style sheet. Delete this when blitz
+/// honours `vertical-align`.
+pub fn raise_superscripts(html: &str) -> String {
+    let raise = |c: char| match c {
+        '0' => Some('⁰'),
+        '1' => Some('¹'),
+        '2' => Some('²'),
+        '3' => Some('³'),
+        '4'..='9' => char::from_u32(c as u32 - '4' as u32 + 0x2074),
+        '+' => Some('⁺'),
+        '-' => Some('⁻'),
+        '=' => Some('⁼'),
+        '(' | '[' => Some('⁽'),
+        ')' | ']' => Some('⁾'),
+        _ => None,
+    };
+    // Lowercasing ASCII keeps every byte where it was: MOBI writes `<SUP>`.
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    let mut at = 0;
+    while let Some(i) = lower[at..].find("<sup").map(|i| at + i) {
+        let open_end = lower[i..].find('>').map(|j| i + j + 1);
+        let close = open_end.and_then(|o| lower[o..].find("</sup>").map(|j| o + j));
+        let (Some(o), Some(c)) = (open_end, close) else { break };
+        let named = matches!(lower.as_bytes()[i + 4], b'>' | b' ' | b'\t' | b'\n' | b'\r');
+        let inner = &html[o..c];
+        // The text between the tags, as (start, end) byte spans of `inner`.
+        let mut texts = Vec::new();
+        let mut t = 0;
+        while t < inner.len() {
+            let lt = inner[t..].find('<').map_or(inner.len(), |j| t + j);
+            texts.push((t, lt));
+            t = inner[lt..].find('>').map_or(inner.len(), |j| lt + j + 1);
+        }
+        let text = || texts.iter().flat_map(|&(a, b)| inner[a..b].chars());
+        let digits = text().any(|ch| ch.is_ascii_digit());
+        if !named || !digits || !text().all(|ch| ch.is_whitespace() || raise(ch).is_some()) {
+            out += &html[at..i + 4];
+            at = i + 4;
+            continue;
+        }
+        out += &html[at..i];
+        out += "<sup data-raised";
+        out += &html[i + 4..o];
+        let mut last = 0;
+        for (a, b) in texts {
+            out += &inner[last..a];
+            out.extend(inner[a..b].chars().map(|ch| raise(ch).unwrap_or(ch)));
+            last = b;
+        }
+        out += &inner[last..];
+        at = c;
+    }
+    out += &html[at..];
+    out
 }
 
 /// Lay out a bare HTML fragment with the reading stylesheet. Used by tests to
@@ -1482,6 +1546,18 @@ mod tests {
         assert_eq!(hoist_edge_spaces("<i>y </i></b>z"), "<i>y</i></b> z", "and out of nested ones");
         assert_eq!(hoist_edge_spaces("<pre><code>  x\n </code></pre>"), "<pre><code>  x\n </code></pre>", "pre is left alone");
         assert_eq!(hoist_edge_spaces("a<br/> b<img src=x> c"), "a<br/> b<img src=x> c", "void tags have no edge");
+    }
+
+    #[test]
+    fn a_note_reference_is_set_in_superior_digits() {
+        let r = raise_superscripts;
+        assert_eq!(
+            r(r#"a lake.<a href="n.html#f8"><sup class="calibre6">18</sup></a>"#),
+            r#"a lake.<a href="n.html#f8"><sup data-raised class="calibre6">¹⁸</sup></a>"#
+        );
+        assert_eq!(r("x<SUP><small>[4]</small></SUP>"), "x<sup data-raised><small>⁽⁴⁾</small></SUP>");
+        assert_eq!(r("1<sup>er</sup> 2<sup>1,2</sup>"), "1<sup>er</sup> 2<sup>1,2</sup>", "not a number: left alone");
+        assert_eq!(r("<supx>3</supx><sup>"), "<supx>3</supx><sup>", "another tag, and an unclosed one");
     }
 
     #[test]

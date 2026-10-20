@@ -277,12 +277,12 @@ html hr {{
   margin: 2em auto;
   width: 30%;
 }}
-/* A note reference is a superscript, and blitz's own UA sheet does not make it
-   one — the number sat on the baseline at full size, reading as part of the
-   sentence. */
+/* A note reference is a superscript, and blitz cannot lift one: it never reads
+   vertical-align. A numeric <sup> is set in superior digits instead
+   (chapter::raise_superscripts), already small; anything else is shrunk so it
+   at least does not read as part of the sentence. */
 sup, sub {{ line-height: 0; font-size: 0.72em; }}
-sup {{ vertical-align: super; }}
-sub {{ vertical-align: sub; }}
+html sup[data-raised] {{ font-size: inherit; }}
 "#
         )
     }

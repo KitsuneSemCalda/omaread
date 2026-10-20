@@ -1138,6 +1138,13 @@ past the measure by its own width, because Parley justified the line without it
 and cannot be asked for room. Hanging punctuation is a recognised typographic
 choice; reserving the width inside the measure needs a Parley that hyphenates.
 
+**blitz-dom 0.2.4 never reads `vertical-align`**, and Parley 0.6 has no baseline
+shift, so `sup { vertical-align: super }` does nothing: a note reference sat on
+the baseline, only smaller. `chapter::raise_superscripts` sets a `<sup>` that
+is only a number (digits, `+-=`, brackets) in Literata's superior digits
+(`8` → `⁸`, `[4]` → `⁽⁴⁾`), one character for one so CFI offsets hold. Any other
+`<sup>` is just shrunk. Remove it when blitz honours `vertical-align`.
+
 `--check` and `--shot` now hyphenate and (check) load figures, as the window
 does. Without them they were checking a different layout from the one on
 screen.
