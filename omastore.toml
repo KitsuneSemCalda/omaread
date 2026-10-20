@@ -1,0 +1,6 @@
+kind = "app"
+name = "Omaread"
+summary = "Read EPUB, AZW3 and MOBI books on Wayland."
+categories = ["Office", "Viewer"]
+icon = "assets/omaread.svg"
+screenshots = ["docs/screenshot.png"]
