@@ -1,5 +1,3 @@
 /target
 *.epub
 *.pdf
-# Internal design record, kept locally.
-CONTEXT.md
