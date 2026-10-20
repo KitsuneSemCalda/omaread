@@ -270,14 +270,23 @@ mod tests {
         assert!(!super::is_note("p", "   "));
     }
 
+    /// Under the line when there is room, over it when not, and the sheet's
+    /// own place when neither side has it.
+    #[test]
+    fn a_note_sits_beside_its_line() {
+        assert_eq!(super::note_top((100.0, 120.0), 200.0, 800.0), Some(130.0));
+        assert_eq!(super::note_top((700.0, 720.0), 200.0, 800.0), Some(490.0));
+        assert_eq!(super::note_top((300.0, 320.0), 600.0, 800.0), None);
+    }
+
     /// A short note sits a quarter down the window; a long one moves up to fit,
     /// and one taller than the window overflows it, which is what sends the
     /// reader to its page instead.
     #[test]
     fn a_long_note_moves_up_until_it_cannot_fit() {
-        let note_box = |words: usize| {
+        let note_box_at = |words: usize, at: Option<f32>| {
             let doc = crate::chapter::layout_document(
-                crate::hud::note_html(&"palabra ".repeat(words)),
+                crate::hud::note_html(&"palabra ".repeat(words), at),
                 crate::hud::note_stylesheet(&crate::style::ReadingStyle::default().chrome()),
                 None,
                 crate::chapter::viewport(900, 800, 1.0, false),
@@ -288,12 +297,15 @@ mod tests {
             let (_, y, _, h) = crate::chapter::node_rect(doc.dom(), n).expect("no box");
             (y, y + h)
         };
+        let note_box = |words: usize| note_box_at(words, None);
         let (top, _) = note_box(10);
         assert!((top - 208.0).abs() < 1.0, "a short note sits at 26vh, not {top}");
         let (top, bottom) = note_box(250);
         assert!(top < 208.0 && bottom <= 800.0, "a long one moves up and fits: {top}..{bottom}");
         let (_, bottom) = note_box(3000);
         assert!(bottom > 800.0, "too long to fit runs off the window");
+        let (top, _) = note_box_at(10, Some(500.0));
+        assert!((top - 500.0).abs() < 1.0, "a placed note sits where it was put, not {top}");
     }
 
     /// Highlights land under their chapter in reading order, notes under the
@@ -1935,6 +1947,7 @@ impl App {
             self.open_note(&text);
             if self.note_fits() {
                 self.noteref = self.chapter.as_ref().and_then(|ch| link_bytes(ch.dom(), hit));
+                self.place_note(&text);
                 return true;
             }
             // Taller than the window: it is read where it lives.
@@ -2100,13 +2113,51 @@ impl App {
         self.noteref = None;
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.popup = chapter::layout_document(
-            hud::note_html(text),
+            hud::note_html(text, None),
             hud::note_stylesheet(&self.chrome()),
             None,
             vp,
             self.page_height(),
         );
         self.request_redraw();
+    }
+
+    /// Move the open note next to the line that called it: under it when it
+    /// fits there, else over it. Laid out once to be measured, then again in
+    /// place — it is one paragraph.
+    fn place_note(&mut self, text: &str) {
+        let Some(line) = self.noteref_line() else { return };
+        let Some(h) = self
+            .popup
+            .as_ref()
+            .and_then(|p| find_by_attr(p.dom(), 0, "class", "note").and_then(|n| chapter::node_rect(p.dom(), n)))
+            .map(|(_, _, _, h)| h)
+        else {
+            return;
+        };
+        let Some(top) = note_top(line, h, self.size.1 as f32 / self.ui_scale()) else { return };
+        let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
+        self.popup = chapter::layout_document(
+            hud::note_html(text, Some(top)),
+            hud::note_stylesheet(&self.chrome()),
+            None,
+            vp,
+            self.page_height(),
+        );
+    }
+
+    /// The noteref's line on screen, top and bottom, in the chrome's pixels.
+    fn noteref_line(&self) -> Option<(f32, f32)> {
+        let (id, r) = self.noteref.as_ref()?;
+        let ch = self.chapter.as_ref()?;
+        let &(_, y0, _, y1) = chapter::range_rects(ch.dom(), *id, r.clone()).first()?;
+        // Whichever column shows it.
+        let (top, _) = (self.page..(self.page + self.effective_columns()).min(ch.pages.count()))
+            .map(|p| ch.pages.slice(p))
+            .find(|&(top, extent)| (top..top + extent).contains(&y0))?;
+        let k = self.scale / self.ui_scale();
+        let m = self.page_margin();
+        Some(((y0 - top + m) * k, (y1 - top + m) * k))
     }
 
     /// Go to a spine item, landing on a fragment's page when there is one.
@@ -3336,6 +3387,7 @@ impl App {
         if let Some(text) = note.filter(|t| !t.is_empty()) {
             self.open_note(&text);
             self.noteref = noteref;
+            self.place_note(&text);
         }
     }
 
@@ -4254,6 +4306,19 @@ fn note_of_marker(dom: &blitz_dom::BaseDocument, target: usize) -> usize {
             if opens { b } else { target }
         }
         None => target,
+    }
+}
+
+/// Where a note `h` tall goes beside the line `(y0, y1)` in a window `win_h`
+/// tall: just under it, else just over it, else nowhere in particular.
+fn note_top((y0, y1): (f32, f32), h: f32, win_h: f32) -> Option<f32> {
+    const AIR: f32 = 10.0;
+    if y1 + AIR + h <= win_h {
+        Some(y1 + AIR)
+    } else if y0 - AIR - h >= 0.0 {
+        Some(y0 - AIR - h)
+    } else {
+        None
     }
 }
 

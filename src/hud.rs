@@ -142,8 +142,11 @@ fn context_doc(rows: &str) -> String {
 
 /// A footnote or a bibliography entry, shown where you are rather than by
 /// sending you to the page it lives on and leaving you to find your way back.
-pub fn note_html(text: &str) -> String {
-    format!(r#"<!DOCTYPE html><html><body><div class="gap"></div><div class="note">{}</div></body></html>"#, escape(text))
+///
+/// `top` pins the note's top edge, in CSS pixels; without it the sheet places it.
+pub fn note_html(text: &str, top: Option<f32>) -> String {
+    let gap = top.map_or(String::new(), |y| format!(r#" style="flex: 0 0 {y}px; min-height: 0""#));
+    format!(r#"<!DOCTYPE html><html><body><div class="gap"{gap}></div><div class="note">{}</div></body></html>"#, escape(text))
 }
 
 /// A figure on its own, over the page. `src` is already absolute.
