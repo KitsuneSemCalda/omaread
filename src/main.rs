@@ -65,6 +65,9 @@ const CARD_RING: f32 = 8.0;
 /// a text-colour fill and a fainter hairline (`[controls]` in its shell.toml).
 const HOVER_FILL_ALPHA: f32 = 0.08;
 const HOVER_BORDER_ALPHA: f32 = 0.25;
+/// The reference whose note is open, in the accent: stronger than a selection,
+/// so it reads as "this one" on a tiny superscript.
+const NOTEREF_ALPHA: f32 = 0.5;
 
 #[derive(Clone, Copy)]
 struct Slide {
@@ -236,11 +239,17 @@ mod tests {
         let (hx, hy) = on.expect("the link is not hittable anywhere");
 
         // Six pixels off is a miss for the engine and a hit for a reader.
-        assert_eq!(super::href_at(&doc.doc, hx, hy).as_deref(), Some("#n1"));
-        assert_eq!(super::href_at(&doc.doc, hx - 6.0, hy).as_deref(), Some("#n1"));
-        assert_eq!(super::href_at(&doc.doc, hx, hy + 6.0).as_deref(), Some("#n1"));
+        assert_eq!(super::link_at(&doc.doc, hx, hy).map(|l| l.0).as_deref(), Some("#n1"));
+        assert_eq!(super::link_at(&doc.doc, hx - 6.0, hy).map(|l| l.0).as_deref(), Some("#n1"));
+        assert_eq!(super::link_at(&doc.doc, hx, hy + 6.0).map(|l| l.0).as_deref(), Some("#n1"));
         // Far away is still a miss, or every click would follow something.
-        assert_eq!(super::href_at(&doc.doc, px, py + ph - 1.0), None);
+        assert_eq!(super::link_at(&doc.doc, px, py + ph - 1.0).map(|l| l.0), None);
+
+        // The reference itself is what gets marked while its note is up.
+        let (_, node, x, y) = super::link_at(&doc.doc, hx - 6.0, hy).unwrap();
+        let (el, r) = super::link_bytes(doc.dom(), (node, x, y)).expect("no reference text");
+        let text = &crate::chapter::text_layout(doc.dom(), el).unwrap().text;
+        assert!(text[..r.end].ends_with("nota2"), "marked {:?}", &text[r]);
     }
 
     /// A note is shown where you are; a section is somewhere to go.
@@ -660,6 +669,9 @@ struct App {
     back: Option<(usize, usize, String)>,
     /// A footnote or reference on show over the page.
     popup: Option<Chapter>,
+    /// The link that opened it, as bytes of its paragraph's text, so the page
+    /// can show which reference the note belongs to.
+    noteref: Option<(usize, std::ops::Range<usize>)>,
     /// The settings panel over the library, and the folder path being typed
     /// into it, if any.
     menu: Option<Chapter>,
@@ -812,6 +824,7 @@ impl App {
             warned: None,
             back: None,
             popup: None,
+            noteref: None,
             menu: None,
             menu_at: None,
             adding_folder: None,
@@ -1483,6 +1496,7 @@ impl App {
         }
         chapter::relayout(&mut fig, vp, self.page_height());
         self.popup = Some(fig);
+        self.noteref = None;
         self.request_redraw();
     }
 
@@ -1889,11 +1903,11 @@ impl App {
             self.request_redraw();
             return true;
         }
-        let href = {
+        let (href, hit) = {
             let Some(ch) = self.chapter.as_ref() else { return false };
             let (fx, fy) = self.pointer_in_flow();
-            match href_at(&ch.doc, fx, fy) {
-                Some(h) => h,
+            match link_at(&ch.doc, fx, fy) {
+                Some((h, node, x, y)) => (h, (node, x, y)),
                 None => return false,
             }
         };
@@ -1914,6 +1928,7 @@ impl App {
         if let Some(text) = self.note_at(spine, frag.as_deref()) {
             self.open_note(&text);
             if self.note_fits() {
+                self.noteref = self.chapter.as_ref().and_then(|ch| link_bytes(ch.dom(), hit));
                 return true;
             }
             // Taller than the window: it is read where it lives.
@@ -2063,6 +2078,7 @@ impl App {
             }
         };
         rows.push(("? F1", tr!("help-help")));
+        self.noteref = None;
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.popup = chapter::layout_document(
             hud::help_html(&rows),
@@ -2075,6 +2091,7 @@ impl App {
     }
 
     fn open_note(&mut self, text: &str) {
+        self.noteref = None;
         let vp = chapter::viewport(self.size.0, self.size.1, self.ui_scale(), self.style.dark());
         self.popup = chapter::layout_document(
             hud::note_html(text),
@@ -3313,8 +3330,10 @@ impl App {
             return self.open_help();
         }
         let note = self.popup.take().map(|p| chapter::text_of(p.dom(), 0));
+        let noteref = self.noteref.take();
         if let Some(text) = note.filter(|t| !t.is_empty()) {
             self.open_note(&text);
+            self.noteref = noteref;
         }
     }
 
@@ -3468,6 +3487,10 @@ impl App {
             View::Reading => (self.highlight_rects(), self.selection_rects()),
             _ => ((Vec::new(), Vec::new()), Vec::new()),
         };
+        let noteref = match (&self.noteref, &self.chapter, &self.popup, self.view) {
+            (Some((id, r)), Some(ch), Some(_), View::Reading) => chapter::range_rects(ch.dom(), *id, r.clone()),
+            _ => Vec::new(),
+        };
         // The library's selection is painted, so arrow keys cost a frame instead
         // of a rebuild — a rebuild re-requests every cover.
         let card_rect = |index: usize| -> Option<(f32, f32, f32, f32)> {
@@ -3615,6 +3638,7 @@ impl App {
                     paint::bands(scene, &highlights, HIGHLIGHT, top, extent, x, &frame);
                     paint::bands(scene, &noted, NOTED, top, extent, x, &frame);
                     paint::bands(scene, &selection, accent.with_alpha(SELECTION_ALPHA), top, extent, x, &frame);
+                    paint::bands(scene, &noteref, accent.with_alpha(NOTEREF_ALPHA), top, extent, x, &frame);
                     if let Some(head) = heads[col] {
                         paint::head(scene, doc, head, x, col_w, &frame, ground);
                     }
@@ -4137,7 +4161,10 @@ fn open_url(url: &str) {
 /// ponytail: eight probes at a fixed radius. Measuring the glyph's own box
 /// would be exact, but an inline element has no Taffy box to measure
 /// (CONTEXT.md §9) — the run lives in the paragraph's parley layout.
-fn href_at(doc: &blitz_html::HtmlDocument, x: f32, y: f32) -> Option<String> {
+///
+/// Returns the node and the probe point that found it too, so the reference
+/// can be marked while its note is up.
+fn link_at(doc: &blitz_html::HtmlDocument, x: f32, y: f32) -> Option<(String, usize, f32, f32)> {
     const R: f32 = 7.0;
     [
         (0.0, 0.0),
@@ -4153,8 +4180,30 @@ fn href_at(doc: &blitz_html::HtmlDocument, x: f32, y: f32) -> Option<String> {
     .into_iter()
     .find_map(|(dx, dy)| {
         let hit = doc.hit(x + dx, y + dy)?;
-        ancestor_attr(doc, hit.node_id, "href")
+        Some((ancestor_attr(doc, hit.node_id, "href")?, hit.node_id, x + dx, y + dy))
     })
+}
+
+/// A link's own text, as a byte range of its paragraph's layout: the inline has
+/// no box to outline (CONTEXT.md §9), so it is found as text — the occurrence
+/// of its words nearest the click, since "2" is in a paragraph more than once.
+fn link_bytes(
+    dom: &blitz_dom::BaseDocument,
+    (hit, x, y): (usize, f32, f32),
+) -> Option<(usize, std::ops::Range<usize>)> {
+    let mut a = dom.get_node(hit)?;
+    while !matches!(&a.data, blitz_dom::NodeData::Element(el) if el.attrs.iter().any(|at| &*at.name.local == "href")) {
+        a = dom.get_node(a.parent?)?;
+    }
+    let words = a.text_content();
+    let words = words.trim();
+    let el = chapter::text_element(dom, hit)?;
+    let tl = chapter::text_layout(dom, el)?;
+    let (ox, oy) = chapter::node_origin(dom, el)?;
+    let s = tl.layout.scale();
+    let at = parley::Cursor::from_point(&tl.layout, (x - ox) * s, (y - oy) * s).index();
+    let start = tl.text.match_indices(words).map(|(i, _)| i).min_by_key(|i| i.abs_diff(at))?;
+    (!words.is_empty()).then(|| (el, start..start + words.len()))
 }
 
 /// Is this link target a note to read here, or a place to go to?
