@@ -1088,7 +1088,13 @@ pub fn char_at(dom: &BaseDocument, id: usize, y: f32) -> Option<usize> {
     let (_, oy) = node_origin(dom, id)?;
     // In the layout's own units, which are device pixels (`layout.scale()`).
     let local = (y - oy) * tl.layout.scale();
-    let line = tl.layout.lines().find(|l| l.metrics().max_coord > local)?;
+    // By the line's middle, not its bottom: at a fractional scale the line
+    // above a page break can end a hair past it, and naming that line puts a
+    // re-flow one page back.
+    let line = tl.layout.lines().find(|l| {
+        let m = l.metrics();
+        (m.min_coord + m.max_coord) / 2.0 > local
+    })?;
     let byte = line.text_range().start;
     Some(visible_count(tl.text.get(..byte)?))
 }
@@ -1252,6 +1258,31 @@ mod tests {
         let node = super::node_at(doc.dom(), doc.pages.top_of(2)).unwrap();
         let bare = super::node_top(doc.dom(), node).unwrap();
         assert_eq!(doc.pages.page_containing(bare), 0, "the paragraph starts on page 1");
+    }
+
+    /// At a fractional scale the line above a page break can end a hair past
+    /// it; naming that line sent a resize back to the page before.
+    #[test]
+    fn a_page_start_survives_a_fractional_scale() {
+        let p = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. ".repeat(6);
+        let mut doc = super::layout_document(
+            format!("<html><body style='margin:0;font-size:20px;line-height:1.5'>{}</body></html>", format!("<p>{p}</p>").repeat(30)),
+            String::new(),
+            None,
+            super::viewport(900, 700, 1.25, false),
+            480.0,
+        )
+        .expect("the page must lay out");
+        // A resize lays out in place, and that is where the break moved.
+        assert!(super::relayout(&mut doc, super::viewport(900, 700, 1.25, false), 480.0));
+
+        for page in 0..doc.pages.count() {
+            let top = doc.pages.top_of(page);
+            let Some(node) = super::node_at(doc.dom(), top) else { continue };
+            let off = super::char_at(doc.dom(), node, top).expect("no character offset");
+            let y = super::highlight_rects(doc.dom(), node, off, 1)[0].1;
+            assert_eq!(doc.pages.page_containing(y), page, "page {page} came back wrong");
+        }
     }
 
     /// An image keeps its own size, or shrinks to the column — never grows.
