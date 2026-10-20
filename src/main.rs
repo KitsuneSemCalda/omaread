@@ -767,6 +767,11 @@ struct App {
     path: String,
     /// Restored on startup, consumed once the chapter it points at is open.
     pending: Option<cfi::Cfi>,
+    /// The character a re-flow keeps on screen, with the chapter and page it
+    /// last landed on. Held across a run of re-flows: a window drag sends
+    /// dozens of resizes, and re-anchoring on each landing page would snap a
+    /// little further back every time.
+    reflow_anchor: Option<(cfi::Cfi, usize, usize)>,
     /// Patterns for the book's `dc:language`; None means no hyphenation.
     hyphenator: Option<hyphen::Hyphenator_>,
     style: ReadingStyle,
@@ -865,6 +870,7 @@ impl App {
             hash: String::new(),
             path: String::new(),
             pending: None,
+            reflow_anchor: None,
             hyphenator: None,
             style: ReadingStyle {
                 scale: style::setting("font-scale")
@@ -3311,13 +3317,9 @@ impl App {
         let Some(index) = self.chapter.as_ref().map(|c| c.index) else {
             return;
         };
-        // Keep the reader's place across a re-flow by carrying the flow offset,
-        // not the page number: a smaller font means more text per page.
-        let anchor = self.chapter.as_ref().map_or(0.0, |c| c.pages.top_of(self.page));
+        let anchor = self.reflow_anchor();
         self.load_chapter(index);
-        if let Some(ch) = &self.chapter {
-            self.page = ch.pages.page_containing(anchor);
-        }
+        self.land_on(anchor);
         self.request_redraw();
     }
 
@@ -3362,7 +3364,7 @@ impl App {
         }
         let vp = self.viewport();
         let ph = self.page_height();
-        let anchor = self.chapter.as_ref().map_or(0.0, |c| c.pages.top_of(self.page));
+        let anchor = self.reflow_anchor();
         let panicked = match &mut self.chapter {
             Some(ch) => !chapter::relayout(ch, vp, ph),
             None => return,
@@ -3374,9 +3376,26 @@ impl App {
             self.load_chapter(i);
             return;
         }
-        if let Some(ch) = &self.chapter {
-            self.page = ch.pages.page_containing(anchor);
+        self.land_on(anchor);
+    }
+
+    /// Keep the reader's place across a re-flow by the text, not the page
+    /// number or the flow offset: a narrower window or a bigger font moves
+    /// every line down, and the old offset lands on text already read.
+    fn reflow_anchor(&self) -> Option<cfi::Cfi> {
+        match &self.reflow_anchor {
+            Some((c, i, p)) if (*i, *p) == (self.index, self.page) => Some(c.clone()),
+            _ => self.cfi_of_page(),
         }
+    }
+
+    fn land_on(&mut self, anchor: Option<cfi::Cfi>) {
+        let Some(ch) = &self.chapter else { return };
+        self.page = self.page.min(ch.pages.count().saturating_sub(1));
+        let Some(c) = anchor else { return };
+        let Some(y) = chapter::top_of_cfi(ch, &c) else { return };
+        self.page = ch.pages.page_containing(y);
+        self.reflow_anchor = Some((c, self.index, self.page));
     }
 
     fn drain_resources(&mut self) {
